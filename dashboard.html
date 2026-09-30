@@ -368,6 +368,11 @@
         <!-- Status Grid -->
         <div class="status-grid">
             <div class="stat-card">
+                <div class="stat-label">AI Agent Heartbeat</div>
+                <div class="stat-value" id="agent-status" style="color: #00e676;">ACTIVE</div>
+                <div class="stat-sub" id="agent-sub">Timer Wakeup: Every 10 min</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-label">Compute Runtime</div>
                 <div class="stat-value" style="color: #38bdf8;">Kaggle Dual T4</div>
                 <div class="stat-sub">16GB VRAM &bull; Headless Engine</div>
@@ -595,6 +600,22 @@
                 console.warn('HF fetch check:', e);
             }
         }
+        // Live Agent Heartbeat Polling (if served via local HTTP or accessible)
+        async function checkAgentStatus() {
+            try {
+                const res = await fetch('status.json');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.agent_status) {
+                        document.getElementById('agent-status').textContent = data.agent_status;
+                        document.getElementById('agent-sub').textContent = 'Last: ' + data.last_heartbeat.split(' ')[1];
+                    }
+                }
+            } catch (e) {}
+        }
+        checkAgentStatus();
+        setInterval(checkAgentStatus, 10000);
+
         checkHuggingFace();
         setInterval(checkHuggingFace, 20000);
     </script>
