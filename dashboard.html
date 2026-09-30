@@ -384,8 +384,8 @@
             </div>
             <div class="stat-card">
                 <div class="stat-label">Cloud Backup</div>
-                <div class="stat-value" style="color: #facc15;">Hugging Face</div>
-                <div class="stat-sub">Thanawanit/Kaggle-Backup</div>
+                <div class="stat-value" id="hf-checkpoint-count" style="color: #facc15;">Syncing...</div>
+                <div class="stat-sub" id="hf-checkpoint-name">Thanawanit/Kaggle-Backup</div>
             </div>
         </div>
 
@@ -562,6 +562,41 @@
             document.getElementById('last-update').textContent = 'Updated: ' + now.toLocaleTimeString();
         }
         setInterval(refreshTimestamp, 15000);
+
+        // Live Hugging Face Checkpoint Polling
+        async function checkHuggingFace() {
+            try {
+                const res = await fetch('https://huggingface.co/api/models/Thanawanit/Kaggle-Backup');
+                if (res.ok) {
+                    const data = await res.json();
+                    const phase5Files = (data.siblings || []).filter(f => f.rfilename && f.rfilename.includes('Phase5'));
+                    const countEl = document.getElementById('hf-checkpoint-count');
+                    const nameEl = document.getElementById('hf-checkpoint-name');
+                    const logBox = document.getElementById('log-box');
+                    if (phase5Files.length > 0) {
+                        const latest = phase5Files[phase5Files.length - 1].rfilename;
+                        const basename = latest.split('/').pop();
+                        countEl.textContent = `${phase5Files.length} Saved`;
+                        countEl.style.color = '#00e676';
+                        nameEl.textContent = basename;
+                        
+                        // Append to log if new
+                        const entry = `[HF] Checkpoint verified on Cloud: ${basename}`;
+                        if (!logBox.textContent.includes(basename)) {
+                            logBox.textContent += `\n${entry}`;
+                        }
+                    } else {
+                        countEl.textContent = 'Awaiting Step 2k';
+                        countEl.style.color = '#facc15';
+                        nameEl.textContent = 'Training Phase 1';
+                    }
+                }
+            } catch (e) {
+                console.warn('HF fetch check:', e);
+            }
+        }
+        checkHuggingFace();
+        setInterval(checkHuggingFace, 20000);
     </script>
 </body>
 </html>
