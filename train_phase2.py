@@ -185,10 +185,44 @@ def train_phase2(args):
                 except Exception as e:
                     print(f"[WARN] Drive backup error: {e}")
 
+            # Hugging Face Cloud Backup
+            hf_token = getattr(args, 'hf_token', None) or os.environ.get('HF_TOKEN') or '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'
+            hf_repo = getattr(args, 'hf_repo', 'Thanawanit/Kaggle-Backup')
+            if hf_token and hf_repo:
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi(token=hf_token)
+                    api.upload_file(
+                        path_or_fileobj=str(ckpt_path),
+                        path_in_repo=f"checkpoints/Phase5_Xyether_Clone/{ckpt_path.name}",
+                        repo_id=hf_repo,
+                        repo_type="model"
+                    )
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase5_Xyether_Clone/{ckpt_path.name})")
+                except Exception as e:
+                    print(f"[WARN] Hugging Face upload error: {e}")
+
     # Export Final Production Model to ONNX & PyTorch
     final_pth = out_dir / "Xyether_Strong_v3_Final.pth"
     torch.save({"params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}")
+
+    # Upload final model to Hugging Face
+    hf_token = getattr(args, 'hf_token', None) or os.environ.get('HF_TOKEN') or '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'
+    hf_repo = getattr(args, 'hf_repo', 'Thanawanit/Kaggle-Backup')
+    if hf_token and hf_repo:
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi(token=hf_token)
+            api.upload_file(
+                path_or_fileobj=str(final_pth),
+                path_in_repo="checkpoints/Phase5_Xyether_Clone/Xyether_Strong_v3_Final.pth",
+                repo_id=hf_repo,
+                repo_type="model"
+            )
+            print(f"[HF] Final production model uploaded to Hugging Face -> {hf_repo}")
+        except Exception as e:
+            print(f"[WARN] Final HF upload error: {e}")
 
     try:
         final_onnx = out_dir / "Xyether_Strong_v3_Final.onnx"
@@ -203,6 +237,14 @@ def train_phase2(args):
             opset_version=14
         )
         print(f"[FINAL EXPORT] Production ONNX graph saved -> {final_onnx}")
+        if hf_token and hf_repo:
+            api.upload_file(
+                path_or_fileobj=str(final_onnx),
+                path_in_repo="checkpoints/Phase5_Xyether_Clone/Xyether_Strong_v3_Final.onnx",
+                repo_id=hf_repo,
+                repo_type="model"
+            )
+            print(f"[HF] Final ONNX model uploaded to Hugging Face -> {hf_repo}")
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}")
 

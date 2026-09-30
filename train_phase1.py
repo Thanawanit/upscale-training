@@ -184,6 +184,23 @@ def train_phase1(args):
                 except Exception as e:
                     print(f"[WARN] Drive backup error: {e}")
 
+            # Hugging Face Cloud Backup
+            hf_token = getattr(args, 'hf_token', None) or os.environ.get('HF_TOKEN') or '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'
+            hf_repo = getattr(args, 'hf_repo', 'Thanawanit/Kaggle-Backup')
+            if hf_token and hf_repo:
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi(token=hf_token)
+                    api.upload_file(
+                        path_or_fileobj=str(ckpt_path),
+                        path_in_repo=f"checkpoints/Phase5_Xyether_Clone/{ckpt_path.name}",
+                        repo_id=hf_repo,
+                        repo_type="model"
+                    )
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase5_Xyether_Clone/{ckpt_path.name})")
+                except Exception as e:
+                    print(f"[WARN] Hugging Face upload error: {e}")
+
     print(f"\n[PHASE 1 COMPLETE] Fidelity base training finished! Final model: {out_dir / f'xyether_phase1_step_{args.total_iters}.pth'}")
 
 
