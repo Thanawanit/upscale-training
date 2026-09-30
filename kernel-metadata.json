@@ -1,7 +1,7 @@
 {
-  "id": "INSERT_KAGGLE_USERNAME/xyether-training-runner",
+  "id": "thanawnit/xyether-training-runner",
   "title": "Xyether Training Runner",
-  "code_file": "Colab_Xyether_Training_Suite.ipynb",
+  "code_file": "Kaggle_Xyether_Training.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": "true",
