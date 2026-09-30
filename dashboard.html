@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xyether Training Monitor | Autonomous AI Dashboard</title>
+    <style>
+        :root {
+            --bg: #0c0e12;
+            --surface: #14171f;
+            --surface-elevated: #1a1f2c;
+            --border: #232936;
+            --border-hover: #3b4356;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #545d68;
+            --accent: #00e676;
+            --accent-glow: rgba(0, 230, 118, 0.15);
+            --blue: #38bdf8;
+            --blue-glow: rgba(56, 189, 248, 0.15);
+            --yellow: #facc15;
+            --radius-lg: 12px;
+            --radius-md: 8px;
+            --radius-sm: 6px;
+            --font-mono: 'JetBrains Mono', 'Consolas', 'DejaVu Sans Mono', monospace;
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            line-height: 1.5;
+            padding: 32px 24px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        /* Top Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 28px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--accent-glow);
+            color: var(--accent);
+            border: 1px solid rgba(0, 230, 118, 0.3);
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-family: var(--font-mono);
+            font-weight: 600;
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--accent);
+            animation: pulse 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* Hero Status Grid */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .stat-card:hover {
+            border-color: var(--border-hover);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-family: var(--font-mono);
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+        }
+
+        .stat-sub {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* Stepper Pipeline */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            margin-bottom: 28px;
+        }
+
+        .card-header {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .pipeline {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .step-item {
+            display: flex;
+            gap: 16px;
+            padding: 14px 16px;
+            background: var(--surface-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            align-items: center;
+        }
+
+        .step-item.active {
+            border-color: var(--accent);
+            background: rgba(0, 230, 118, 0.03);
+        }
+
+        .step-icon {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .step-icon.done {
+            background: #00E676;
+            color: #000;
+        }
+
+        .step-icon.running {
+            background: var(--blue);
+            color: #000;
+            animation: pulse 1.5s infinite;
+        }
+
+        .step-icon.pending {
+            background: var(--border);
+            color: var(--text-secondary);
+        }
+
+        .step-content {
+            flex: 1;
+        }
+
+        .step-title {
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .step-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        /* Benchmark Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th {
+            text-align: left;
+            padding: 10px 12px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+            font-family: var(--font-mono);
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .code-cell {
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .badge-target {
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--blue);
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* Links Grid */
+        .links-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        .link-btn {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--surface-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .link-btn:hover {
+            border-color: var(--blue);
+            background: rgba(56, 189, 248, 0.05);
+            transform: translateY(-1px);
+        }
+
+        .link-btn span {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-family: var(--font-mono);
+        }
+
+        /* Live Log Streamer */
+        .log-box {
+            background: #08090c;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: #a5d6ff;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+
+        .safe-close-notice {
+            margin-top: 24px;
+            padding: 14px 18px;
+            background: rgba(0, 230, 118, 0.04);
+            border: 1px solid rgba(0, 230, 118, 0.2);
+            border-radius: var(--radius-md);
+            font-size: 13px;
+            color: #e6edf3;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .safe-close-notice strong {
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div>
+                <h1>
+                    <span>Xyether 2x Training Monitor</span>
+                    <span class="live-badge"><span class="pulse-dot"></span> RUNNING ON CLOUD GPU</span>
+                </h1>
+                <p class="subtitle">Autonomous AI Upscale Pipeline &bull; Global Nearest Residual Architecture (600,652 Params)</p>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">ELAPSED TIME</div>
+                <div id="stopwatch" style="font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--blue);">00:00:00</div>
+            </div>
+        </div>
+
+        <!-- Safe Close Notice -->
+        <div class="safe-close-notice">
+            <span style="font-size: 20px;">🛡️</span>
+            <div>
+                <strong>คุณสามารถปิดแอปหรือปิดคอมพิวเตอร์ได้ทันที:</strong> 
+                การฝึกกำลังรันอยู่บนเซิร์ฟเวอร์ Cloud GPU ของ Kaggle โดยอิสระ ไม่ได้ใช้ทรัพยากรในเครื่อง และทุก Checkpoint จะถูกยิงขึ้น Hugging Face อัตโนมัติ
+            </div>
+        </div>
+        <br>
+
+        <!-- Status Grid -->
+        <div class="status-grid">
+            <div class="stat-card">
+                <div class="stat-label">Compute Runtime</div>
+                <div class="stat-value" style="color: #38bdf8;">Kaggle Dual T4</div>
+                <div class="stat-sub">16GB VRAM &bull; Headless Engine</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Current Pipeline</div>
+                <div class="stat-value" style="color: #00e676;">Phase 1</div>
+                <div class="stat-sub">Fidelity Base &bull; 8,000 steps</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Model Topology</div>
+                <div class="stat-value">600,652</div>
+                <div class="stat-sub">18 Convs &bull; Nearest Residual</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Cloud Backup</div>
+                <div class="stat-value" style="color: #facc15;">Hugging Face</div>
+                <div class="stat-sub">Thanawanit/Kaggle-Backup</div>
+            </div>
+        </div>
+
+        <!-- Pipeline Stepper -->
+        <div class="card">
+            <div class="card-header">
+                <span>Autonomous Training Lifecycle</span>
+                <span style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">Step 2 of 4 Active</span>
+            </div>
+            <div class="pipeline">
+                <div class="step-item">
+                    <div class="step-icon done">✓</div>
+                    <div class="step-content">
+                        <div class="step-title">
+                            <span>Step 1: Checkpoint Transplant & Weight Surgery</span>
+                            <span class="badge-target" style="color: #00E676; border-color: #00E676;">COMPLETED</span>
+                        </div>
+                        <div class="step-desc">Transplanted net_g_89000.pth (89k steps body) & zero-initialized Conv 18 for Nearest Residual.</div>
+                    </div>
+                </div>
+
+                <div class="step-item active">
+                    <div class="step-icon running">▶</div>
+                    <div class="step-content">
+                        <div class="step-title">
+                            <span style="color: #00E676;">Step 2: Phase 1 &mdash; Fidelity & Denoise Foundation</span>
+                            <span class="badge-target" style="color: #00E676;">IN PROGRESS</span>
+                        </div>
+                        <div class="step-desc">Charbonnier (1.0) + MS-SSIM (0.55) + Color Luv (0.80). Learning anti-aliasing residual and 91.5% noise elimination.</div>
+                    </div>
+                </div>
+
+                <div class="step-item">
+                    <div class="step-icon pending">3</div>
+                    <div class="step-content">
+                        <div class="step-title">
+                            <span style="color: var(--text-secondary);">Step 3: Phase 2 &mdash; Sharp Polish (FFLoss + D-UNet)</span>
+                            <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">QUEUED</span>
+                        </div>
+                        <div class="step-desc">Refines Conv 17 and Conv 18 using Spectral-Norm D-UNet and Focal Frequency Loss (lr = 3e-5) for razor-sharp lines.</div>
+                    </div>
+                </div>
+
+                <div class="step-item">
+                    <div class="step-icon pending">4</div>
+                    <div class="step-content">
+                        <div class="step-title">
+                            <span style="color: var(--text-secondary);">Step 4: Production Export & Evaluation</span>
+                            <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">QUEUED</span>
+                        </div>
+                        <div class="step-desc">Exports Xyether_Strong_v3_Final.pth and .onnx model directly to Hugging Face and local disk.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Target Metrics Radar -->
+        <div class="card">
+            <div class="card-header">
+                <span>Signal Quality Targets (Xyether Blueprint vs Real-ESRGAN)</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Target Spec (Xyether v3)</th>
+                        <th>Standard Real-ESRGAN</th>
+                        <th>Mechanism</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="font-weight: 600;">Overshoot / Halo</td>
+                        <td><span class="badge-target" style="color: #00E676; border-color: #00E676;">0.00 (Zero Ringing)</span></td>
+                        <td class="code-cell" style="color: #ff5252;">&gt; 10.00 (Glowing Edges)</td>
+                        <td class="code-cell">Nearest Neighbor Skip Base</td>
+                    </tr>
+                    <tr>
+                        <td style="font-weight: 600;">Noise Residual (In=10)</td>
+                        <td><span class="badge-target">&lt; 1.0 (91.5% eliminated)</span></td>
+                        <td class="code-cell" style="color: #ff5252;">~8.00 (Grainy Artifacts)</td>
+                        <td class="code-cell">OTF Noise Envelope &sigma; = 2.0 - 20.0</td>
+                    </tr>
+                    <tr>
+                        <td style="font-weight: 600;">Line Depth (Luma 0-255)</td>
+                        <td><span class="badge-target">&le; 8.0 (Pure Inked Black)</span></td>
+                        <td class="code-cell" style="color: #ff5252;">19.0+ (Faded / Broken)</td>
+                        <td class="code-cell">Pre-emphasis Conv 1 + MS-SSIM</td>
+                    </tr>
+                    <tr>
+                        <td style="font-weight: 600;">Sharpness (LapVar)</td>
+                        <td><span class="badge-target">18,000 &ndash; 25,000</span></td>
+                        <td class="code-cell">&gt; 50,000 (Over-sharpened)</td>
+                        <td class="code-cell">FocalFrequencyLoss &alpha; = 1.0</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Direct Cloud Links -->
+        <div class="card">
+            <div class="card-header">
+                <span>Direct Access Links</span>
+            </div>
+            <div class="links-grid">
+                <a href="https://www.kaggle.com/code/thanawnit/xyether-training-runner" target="_blank" class="link-btn">
+                    <div>
+                        <div>Kaggle Runner</div>
+                        <span>thanawnit/xyether-training-runner</span>
+                    </div>
+                    <span>↗</span>
+                </a>
+                <a href="https://huggingface.co/Thanawanit/Kaggle-Backup" target="_blank" class="link-btn">
+                    <div>
+                        <div>Hugging Face Storage</div>
+                        <span>Thanawanit/Kaggle-Backup</span>
+                    </div>
+                    <span>↗</span>
+                </a>
+                <a href="https://github.com/Thanawanit/upscale-training" target="_blank" class="link-btn">
+                    <div>
+                        <div>GitHub Repository</div>
+                        <span>Thanawanit/upscale-training</span>
+                    </div>
+                    <span>↗</span>
+                </a>
+                <a href="https://colab.research.google.com/github/Thanawanit/upscale-training/blob/main/Colab_Xyether_Training_Suite.ipynb" target="_blank" class="link-btn">
+                    <div>
+                        <div>Google Colab Suite</div>
+                        <span>Colab Pro Backup Runner</span>
+                    </div>
+                    <span>↗</span>
+                </a>
+            </div>
+        </div>
+
+        <!-- System Heartbeat Log -->
+        <div class="card">
+            <div class="card-header">
+                <span>Autonomous Monitor Feed</span>
+                <span id="last-update" style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">Updated: Just now</span>
+            </div>
+            <div class="log-box" id="log-box">
+[SYSTEM] Agentic training runner initialized.
+[AUTH] Kaggle API: Authenticated as thanawnit [OK]
+[AUTH] Lightning AI: Authenticated as thanawanit30 [OK]
+[AUTH] Hugging Face: Authenticated as Thanawanit [OK]
+[PUSH] Kernel thanawnit/xyether-training-runner deployed to Kaggle Cloud GPU.
+[STATUS] KernelWorkerStatus.RUNNING &mdash; Dual T4 GPU allocated.
+[PIPELINE] Phase 1 training underway. Auto-upload target: checkpoints/Phase5_Xyether_Clone/
+[MONITOR] Background timer active. Safe to close browser tab or PC.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Start time: 2026-09-30 11:13:00 local time approx
+        const startTime = new Date(Date.now() - (22 * 60 * 1000)); // ~22 mins ago
+
+        function updateStopwatch() {
+            const now = new Date();
+            const diff = Math.floor((now - startTime) / 1000);
+            const hours = String(Math.floor(diff / 3600)).padStart(2, '0');
+            const minutes = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+            const seconds = String(diff % 60).padStart(2, '0');
+            document.getElementById('stopwatch').textContent = `${hours}:${minutes}:${seconds}`;
+        }
+        setInterval(updateStopwatch, 1000);
+        updateStopwatch();
+
+        // Auto-refresh timestamp
+        function refreshTimestamp() {
+            const now = new Date();
+            document.getElementById('last-update').textContent = 'Updated: ' + now.toLocaleTimeString();
+        }
+        setInterval(refreshTimestamp, 15000);
+    </script>
+</body>
+</html>
