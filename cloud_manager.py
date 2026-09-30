@@ -5,9 +5,9 @@ from pathlib import Path
 
 def check_kaggle_auth():
     kaggle_dir = Path.home() / ".kaggle"
-    token_file = kaggle_dir / "kaggle.json"
-    if token_file.exists():
-        print(f"[KAGGLE] Found credentials: {token_file}")
+    token_file = kaggle_dir / "access_token"
+    json_file = kaggle_dir / "kaggle.json"
+    if token_file.exists() or json_file.exists() or os.environ.get("KAGGLE_API_TOKEN"):
         res = subprocess.run(["kaggle", "competitions", "list"], capture_output=True, text=True)
         if res.returncode == 0:
             print("[KAGGLE] Authentication: SUCCESS [OK]")
@@ -16,7 +16,7 @@ def check_kaggle_auth():
             print(f"[KAGGLE] Auth error: {res.stderr[:200]}")
             return False
     else:
-        print(f"[KAGGLE] Missing {token_file}. Place your kaggle.json in ~/.kaggle/ to enable headless push.")
+        print("[KAGGLE] Missing credentials. Set access_token or kaggle.json.")
         return False
 
 def check_lightning_auth():
