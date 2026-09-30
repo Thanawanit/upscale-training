@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pth
+*.onnx
+*.zip
+experiments/
+output/
+dataset/
+checkpoints/
+.ipynb_checkpoints/
