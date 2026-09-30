@@ -1,90 +1,130 @@
 import os
 import sys
 import shutil
+import requests
 import subprocess
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import cv2
 
-DATASET_SOURCES = [
-    {
-        "name": "Anime_Sample_Pack",
-        "url": "https://huggingface.co/datasets/animelover/anime-faces/resolve/main/data.zip",
-        "archive_name": "anime_faces.zip",
-        "description": "High resolution anime face illustrations"
-    }
-]
+def download_safebooru_anime(target_path: Path, max_pages: int = 6, verbose: bool = True) -> int:
+    """
+    Downloads high-resolution anime art from Safebooru (Absurdres 4K).
+    Fetches up to max_pages * 100 images with multi-threaded downloads.
+    """
+    if verbose:
+        print("📡 Querying Safebooru Absurdres 4K API...")
+
+    image_urls = []
+    for page in range(1, max_pages + 1):
+        try:
+            api_url = (
+                f"https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1"
+                f"&limit=100&pid={page}&tags=absurdres+rating:safe+-comic+-text"
+            )
+            resp = requests.get(api_url, timeout=15)
+            if resp.status_code == 200:
+                posts = resp.json()
+                for post in posts:
+                    dir_name = post.get("directory", "")
+                    img_name = post.get("image", "")
+                    if img_name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                        img_url = f"https://safebooru.org/images/{dir_name}/{img_name}"
+                        image_urls.append(img_url)
+        except Exception as e:
+            if verbose:
+                print(f"⚠️ Safebooru Page {page} warning: {e}")
+
+    if verbose:
+        print(f"📡 Found {len(image_urls)} candidate anime images from Safebooru. Downloading...")
+
+    def download_single(url):
+        try:
+            fname = url.split("/")[-1]
+            dest = target_path / fname
+            if not dest.exists() or dest.stat().st_size == 0:
+                r = requests.get(url, timeout=30)
+                if r.status_code == 200 and len(r.content) > 5000:
+                    with open(dest, "wb") as f:
+                        f.write(r.content)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=8) as exe:
+        list(exe.map(download_single, image_urls))
+
+    # Validate image integrity
+    valid_count = 0
+    for f in list(target_path.glob("*.*")):
+        if f.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
+            try:
+                img = cv2.imread(str(f))
+                if img is not None and img.shape[0] >= 200 and img.shape[1] >= 200:
+                    valid_count += 1
+                else:
+                    f.unlink(missing_ok=True)
+            except Exception:
+                f.unlink(missing_ok=True)
+
+    if verbose:
+        print(f"✅ Safebooru download complete: {valid_count} valid high-res anime frames ready!")
+    return valid_count
+
 
 def download_and_extract_dataset(target_dir="/content/dataset", verbose=True):
     target_path = Path(target_dir)
     target_path.mkdir(parents=True, exist_ok=True)
 
-    # Check if existing images already present
-    existing_imgs = list(target_path.rglob("*.png")) + list(target_path.rglob("*.jpg"))
-    if len(existing_imgs) >= 50:
+    # 1. Check if existing images already present
+    existing_imgs = [
+        f for f in target_path.rglob("*.*")
+        if f.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]
+    ]
+    if len(existing_imgs) >= 100:
         if verbose:
             print(f"[DATASET] Found {len(existing_imgs)} existing images in {target_dir}. Skipping download.")
         return str(target_path)
 
-    downloaded = False
-    for src in DATASET_SOURCES:
+    # 2. Check if Kaggle /input has mounted anime dataset
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        for candidate_dir in kaggle_input.rglob("*"):
+            if candidate_dir.is_dir():
+                found_imgs = [
+                    f for f in candidate_dir.glob("*.*")
+                    if f.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]
+                ]
+                if len(found_imgs) >= 50:
+                    if verbose:
+                        print(f"[DATASET] Detected mounted Kaggle dataset in {candidate_dir} ({len(found_imgs)} images).")
+                    for img in found_imgs[:1000]:
+                        try:
+                            shutil.copy(str(img), str(target_path / img.name))
+                        except Exception:
+                            pass
+                    break
+
+    existing_imgs = [
+        f for f in target_path.rglob("*.*")
+        if f.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]
+    ]
+    if len(existing_imgs) >= 100:
         if verbose:
-            print(f"[DATASET] Attempting download: {src['name']}...")
+            print(f"[DATASET] Ready with {len(existing_imgs)} images.")
+        return str(target_path)
 
-        archive_path = target_path / src["archive_name"]
-        url = src["url"]
+    # 3. Download high-res anime art from Safebooru
+    valid_count = download_safebooru_anime(target_path, max_pages=6, verbose=verbose)
 
-        if shutil.which("aria2c"):
-            cmd = ["aria2c", "-q", "-c", "-x", "8", "-s", "8", "-o", src["archive_name"], url]
-            subprocess.run(cmd, cwd=str(target_path), check=False)
-        else:
-            try:
-                import urllib.request
-                urllib.request.urlretrieve(url, str(archive_path))
-            except Exception as e:
-                if verbose:
-                    print(f"[DATASET] Note: Online source {url} not reachable: {e}")
-                continue
+    # 4. Strict Guard: NEVER fallback to synthetic random shapes
+    if valid_count < 50:
+        raise RuntimeError(
+            f"❌ [DATASET ERROR] Failed to download sufficient anime training images (only {valid_count} available). "
+            "Need at least 50 valid anime frames to train Xyether."
+        )
 
-        if archive_path.exists() and archive_path.stat().st_size > 10000:
-            if verbose:
-                print(f"[DATASET] Extracting {src['archive_name']}...")
-            try:
-                shutil.unpack_archive(str(archive_path), str(target_path))
-                archive_path.unlink(missing_ok=True)
-                downloaded = True
-                break
-            except Exception:
-                pass
-
-    total_imgs = list(target_path.rglob("*.png")) + list(target_path.rglob("*.jpg"))
-    if len(total_imgs) < 10:
-        if verbose:
-            print(f"[DATASET] Generating anime line & flat-shading calibration frames...")
-        import cv2
-        import numpy as np
-        for i in range(20):
-            canvas = np.full((512, 512, 3), (240, 230, 220), dtype=np.uint8)
-            # Add line contours (black)
-            for _ in range(15):
-                pt1 = (np.random.randint(0, 512), np.random.randint(0, 512))
-                pt2 = (np.random.randint(0, 512), np.random.randint(0, 512))
-                cv2.line(canvas, pt1, pt2, (8, 8, 8), thickness=np.random.randint(1, 3))
-            # Add color regions
-            for _ in range(5):
-                center = (np.random.randint(0, 512), np.random.randint(0, 512))
-                radius = np.random.randint(20, 100)
-                color = (int(np.random.randint(50, 255)), int(np.random.randint(50, 255)), int(np.random.randint(50, 255)))
-                cv2.circle(canvas, center, radius, color, -1)
-            cv2.imwrite(str(target_path / f"calibration_anime_{i:03d}.png"), canvas)
-
-    total_imgs = list(target_path.rglob("*.png")) + list(target_path.rglob("*.jpg"))
-    if verbose:
-        print(f"[DATASET] Ready! Total {len(total_imgs)} images prepared in {target_dir}.")
     return str(target_path)
 
-    total_imgs = list(target_path.rglob("*.png")) + list(target_path.rglob("*.jpg"))
-    if verbose:
-        print(f"[DATASET] Ready! Total {len(total_imgs)} images prepared in {target_dir}.")
-    return str(target_path)
 
 if __name__ == "__main__":
     download_and_extract_dataset()
