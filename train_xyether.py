@@ -52,7 +52,6 @@ def compute_edge_mask(img_t):
     img_t: Tensor [B, 3, H, W] in [0, 1] range.
     Returns: Edge mask [B, 1, H, W] in [0, 1] range.
     """
-    # ITU-R BT.709 Luma
     y = 0.2126 * img_t[:, 0:1] + 0.7152 * img_t[:, 1:2] + 0.0722 * img_t[:, 2:3]
     kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], device=img_t.device).view(1, 1, 3, 3)
     ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], device=img_t.device).view(1, 1, 3, 3)
@@ -63,9 +62,23 @@ def compute_edge_mask(img_t):
     return edge_mask
 
 
+def compute_spatial_gradient(x):
+    """
+    Computes spatial gradient magnitude (Sobel slope) across RGB channels.
+    x: Tensor [B, C, H, W]
+    Returns: Gradient magnitude [B, C, H, W]
+    """
+    c = x.size(1)
+    kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], device=x.device).view(1, 1, 3, 3).repeat(c, 1, 1, 1)
+    ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], device=x.device).view(1, 1, 3, 3).repeat(c, 1, 1, 1)
+    gx = F.conv2d(x, kx, padding=1, groups=c)
+    gy = F.conv2d(x, ky, padding=1, groups=c)
+    return torch.sqrt(gx ** 2 + gy ** 2 + 1e-6)
+
+
 def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"[HYBRID TRAIN] Initializing Dual-Teacher Training on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    print(f"[ULTRA-SHARP HYBRID TRAIN] Initializing Phase 8 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +87,7 @@ def train_xyether(args):
 
     drive_backup_dir = None
     if os.path.exists("/content/drive/MyDrive"):
-        drive_backup_dir = Path("/content/drive/MyDrive/Xyether_Checkpoints/Hybrid")
+        drive_backup_dir = Path("/content/drive/MyDrive/Xyether_Checkpoints/UltraSharp")
         drive_backup_dir.mkdir(parents=True, exist_ok=True)
         print(f"[DRIVE] Google Drive backup active -> {drive_backup_dir}")
 
@@ -94,20 +107,25 @@ def train_xyether(args):
     )
     print(f"[DATASET] Loaded {len(dataset)} virtual training pairs (Batch size: {args.batch_size}, Patch: {args.patch_size}x{args.patch_size})")
 
-    # 2. Student Model Initialization (16-Conv, from net_g_89000.pth)
+    # 2. Student Model Initialization (Continue from Step 6000)
     net_g = XyetherCompactNet().to(device)
     net_d = UNetDiscriminatorSN(num_in_ch=3, num_feat=64).to(device)
 
-    if not os.path.exists(args.pretrained_path):
-        print(f"[STUDENT] Pretrained base path {args.pretrained_path} not found. Preparing from base...")
-        args.pretrained_path = prepare_xyether_base(cache_dir=str(out_dir / "init_weights"), zero_head=False)
+    # Ensure pretrained checkpoint exists
+    student_init_path = Path(args.pretrained_path)
+    if not student_init_path.exists():
+        if args.pretrained_url:
+            print(f"[STUDENT] Downloading warm-start checkpoint from {args.pretrained_url}...")
+            download_file_if_needed(args.pretrained_url, student_init_path)
+        else:
+            args.pretrained_path = prepare_xyether_base(cache_dir=str(out_dir / "init_weights"), zero_head=False)
 
-    print(f"[STUDENT] Loading student base from {args.pretrained_path}...")
+    print(f"[STUDENT] Loading student weights from {args.pretrained_path}...")
     ckpt_student = torch.load(args.pretrained_path, map_location='cpu')
     sd_student = ckpt_student.get('params_ema', ckpt_student.get('params', ckpt_student))
     clean_sd_student = {k.replace('module.', ''): v for k, v in sd_student.items()}
     net_g.load_state_dict(clean_sd_student, strict=True)
-    print(f"[STUDENT] Loaded all {len(clean_sd_student)} student layers intact (Zero-Init Disabled).")
+    print(f"[STUDENT] Warm-started student model successfully ({len(clean_sd_student)} layers loaded).")
 
     # 3. Dual Teachers Initialization (Strong v3 for Lines + Balanced for Shading)
     cache_weights_dir = out_dir / "teacher_weights"
@@ -160,7 +178,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[HYBRID TRAIN] Starting Dual-Teacher Training (Target: {args.total_iters} iterations)...")
+    print(f"[ULTRA-SHARP TRAIN] Starting Phase 8 Training (Target: {args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -189,25 +207,37 @@ def train_xyether(args):
                 t_bal_out = teacher_bal(lr_batch)
                 edge_mask = compute_edge_mask(hr_batch) # [B, 1, H, W]
                 flat_mask = 1.0 - edge_mask
+                grad_strong = compute_spatial_gradient(t_strong_out)
 
-            # 3. Ground Truth Anchor Loss
+            # 3. Ground Truth Anchor Loss (Keeps color faithful)
             l_gt = crit_charbonnier(sr_batch, hr_batch)
 
-            # 4. Dual-Teacher Edge-Separated Distillation Loss
-            # Edge regions learn sharp lines from Strong v3
+            # 4. Boosted Edge Distillation Loss (Strong v3 ink alignment)
             l_distill_edge = crit_charbonnier(sr_batch * edge_mask, t_strong_out * edge_mask)
-            # Flat regions learn smooth shading from Balanced 2x
-            l_distill_flat = crit_charbonnier(sr_batch * flat_mask, t_bal_out * flat_mask)
-            l_distill = 0.6 * l_distill_edge + 0.4 * l_distill_flat
 
-            # 5. Fourier Frequency Loss
+            # 5. Flat Shading Distillation Loss (Balanced 2x smooth shading)
+            l_distill_flat = crit_charbonnier(sr_batch * flat_mask, t_bal_out * flat_mask)
+
+            # 6. Edge Gradient Steepness Loss (Forces line slope/sharpness to match Strong v3)
+            grad_sr = compute_spatial_gradient(sr_batch)
+            l_grad = crit_charbonnier(grad_sr * edge_mask, grad_strong * edge_mask)
+
+            # 7. Fourier Frequency Loss
             l_ffl = crit_ffl(sr_batch, hr_batch)
 
-            # 6. UNet GAN Texture Polish
+            # 8. Subtle UNet GAN
             d_fake = net_d(sr_batch)
             l_gan_g = crit_gan(d_fake, is_real=True)
 
-            total_loss_g = 0.5 * l_gt + 0.4 * l_distill + 0.1 * l_ffl + l_gan_g
+            # Combined Objective: 65%+ gradient pressure directly sharpens lines!
+            total_loss_g = (
+                0.25 * l_gt +
+                0.80 * l_distill_edge +
+                0.30 * l_distill_flat +
+                0.50 * l_grad +
+                0.10 * l_ffl +
+                l_gan_g
+            )
 
         scaler_g.scale(total_loss_g).backward()
         scaler_g.unscale_(optim_g)
@@ -242,7 +272,7 @@ def train_xyether(args):
             ips = step / max(1, elapsed)
             print(
                 f"[Step {step:5d}/{args.total_iters}] "
-                f"G_Loss: {total_loss_g.item():.4f} (GT: {l_gt.item():.4f}, Distill: {l_distill.item():.4f}, FFL: {l_ffl.item():.4f}, GAN: {l_gan_g.item():.4f}) | "
+                f"G_Loss: {total_loss_g.item():.4f} (Edge: {l_distill_edge.item():.4f}, Grad: {l_grad.item():.4f}, Flat: {l_distill_flat.item():.4f}) | "
                 f"D_Loss: {total_loss_d.item():.4f} | LR: {sched_g.get_last_lr()[0]:.2e} | Speed: {ips:.2f} it/s"
             )
 
@@ -268,7 +298,7 @@ def train_xyether(args):
 
         # Checkpointing
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyether_hybrid_step_{step}.pth"
+            ckpt_path = out_dir / f"xyether_ultrasharp_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': net_g.state_dict(),
@@ -296,16 +326,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase7_Hybrid_Strong_Balanced/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase8_UltraSharp_Hybrid/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase7_Hybrid_Strong_Balanced/{ckpt_path.name})")
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase8_UltraSharp_Hybrid/{ckpt_path.name})")
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}")
 
     # Export Final Production Model to ONNX & PyTorch
-    final_pth = out_dir / "Xyether_Hybrid_v1_Final.pth"
+    final_pth = out_dir / "Xyether_UltraSharp_v2_Final.pth"
     torch.save({"params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}")
 
@@ -317,7 +347,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase7_Hybrid_Strong_Balanced/Xyether_Hybrid_v1_Final.pth",
+                path_in_repo="checkpoints/Phase8_UltraSharp_Hybrid/Xyether_UltraSharp_v2_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -326,7 +356,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}")
 
     try:
-        final_onnx = out_dir / "Xyether_Hybrid_v1_Final.onnx"
+        final_onnx = out_dir / "Xyether_UltraSharp_v2_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         torch.onnx.export(
             ema_g.model,
@@ -341,7 +371,7 @@ def train_xyether(args):
         if hf_token and hf_repo:
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase7_Hybrid_Strong_Balanced/Xyether_Hybrid_v1_Final.onnx",
+                path_in_repo="checkpoints/Phase8_UltraSharp_Hybrid/Xyether_UltraSharp_v2_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -349,21 +379,22 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}")
 
-    print("\n[COMPLETE] Dual-Teacher Hybrid training successfully finished!")
+    print("\n[COMPLETE] Phase 8 Ultra-Sharp training successfully finished!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Xyether Hybrid Series (Strong v3 + Balanced Dual-Teacher)")
+    parser = argparse.ArgumentParser(description="Train Xyether Ultra-Sharp Hybrid Series (Phase 8)")
     parser.add_argument("--data_dir", type=str, default="/content/dataset", help="Dataset folder")
-    parser.add_argument("--pretrained_path", type=str, default="./weights/xyether_transplanted_base.pth", help="Base student checkpoint")
+    parser.add_argument("--pretrained_path", type=str, default="./weights/xyether_hybrid_step_6000.pth", help="Base student checkpoint")
+    parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase7_Hybrid_Strong_Balanced/xyether_hybrid_step_6000.pth", help="Student warm-start URL")
     parser.add_argument("--teacher_strong_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Official_Xyether_References/Xyether_Strong_v3_Official.pth", help="Strong v3 teacher url")
     parser.add_argument("--teacher_bal_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Official_Xyether_References/Xyether_Balanced_2x_Official.pth", help="Balanced 2x teacher url")
     parser.add_argument("--output_dir", type=str, default="./output_models", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--patch_size", type=int, default=128, help="HR Patch size")
     parser.add_argument("--total_iters", type=int, default=6000, help="Total iterations")
-    parser.add_argument("--lr_g", type=float, default=2e-5, help="Generator learning rate")
-    parser.add_argument("--lr_d", type=float, default=2e-5, help="Discriminator learning rate")
+    parser.add_argument("--lr_g", type=float, default=2.5e-5, help="Generator learning rate")
+    parser.add_argument("--lr_d", type=float, default=2.5e-5, help="Discriminator learning rate")
     parser.add_argument("--ffl_weight", type=float, default=0.10, help="Fourier frequency loss weight")
     parser.add_argument("--gan_weight", type=float, default=0.005, help="GAN loss weight")
     parser.add_argument("--ema_decay", type=float, default=0.9995, help="EMA decay")
