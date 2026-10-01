@@ -155,31 +155,18 @@ class ColorLuvLoss(nn.Module):
 
 class FocalFrequencyLoss(nn.Module):
     """
-    Focal Frequency Loss (FFLoss)
+    Fourier Frequency Domain Loss
     Measures frequency discrepancies via 2D Discrete Fourier Transform.
-    Sharpens high-frequency line art in Phase 2 without inducing spatial ringing or halos.
+    Directly sharpens high-frequency line art without spatial halos or numerical underflow.
     """
-    def __init__(self, loss_weight=0.05, alpha=1.0):
+    def __init__(self, loss_weight=0.10):
         super().__init__()
         self.loss_weight = loss_weight
-        self.alpha = alpha
 
     def forward(self, pred, target):
-        # Real 2D FFT
         pred_freq = torch.fft.rfft2(pred, norm='ortho')
         target_freq = torch.fft.rfft2(target, norm='ortho')
-
-        pred_real, pred_imag = pred_freq.real, pred_freq.imag
-        target_real, target_imag = target_freq.real, target_freq.imag
-
-        # Frequency distance
-        freq_diff = torch.sqrt((pred_real - target_real) ** 2 + (pred_imag - target_imag) ** 2 + 1e-12)
-
-        # Dynamic frequency weight matrix
-        weight = freq_diff ** self.alpha
-        weight = weight.detach()
-
-        loss = (weight * (freq_diff ** 2)).mean()
+        loss = torch.abs(pred_freq - target_freq).mean()
         return self.loss_weight * loss
 
 
