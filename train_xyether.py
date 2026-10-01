@@ -147,6 +147,8 @@ def train_xyether(args):
             total_loss_g = l_pix + l_ffl + l_gan_g
 
         scaler_g.scale(total_loss_g).backward()
+        scaler_g.unscale_(optim_g)
+        torch.nn.utils.clip_grad_norm_(net_g.parameters(), max_norm=1.0)
         scaler_g.step(optim_g)
         scaler_g.update()
         sched_g.step()
@@ -163,6 +165,8 @@ def train_xyether(args):
             total_loss_d = (l_d_real + l_d_fake) * 0.5
 
         scaler_d.scale(total_loss_d).backward()
+        scaler_d.unscale_(optim_d)
+        torch.nn.utils.clip_grad_norm_(net_d.parameters(), max_norm=1.0)
         scaler_d.step(optim_d)
         scaler_d.update()
         sched_d.step()
