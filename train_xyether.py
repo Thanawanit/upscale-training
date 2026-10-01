@@ -95,7 +95,7 @@ def train_xyether(args):
 
     # 3. Loss Functions
     crit_charbonnier = CharbonnierLoss(loss_weight=1.0).to(device)
-    crit_ffl = FocalFrequencyLoss(loss_weight=args.ffl_weight, alpha=1.0).to(device)
+    crit_ffl = FocalFrequencyLoss(loss_weight=args.ffl_weight).to(device)
     crit_gan = GANLoss(loss_weight=args.gan_weight).to(device)
 
     # 4. Optimizers with Stable Learning Rate (1.5e-5 matching V11)

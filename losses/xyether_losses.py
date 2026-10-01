@@ -159,9 +159,10 @@ class FocalFrequencyLoss(nn.Module):
     Measures frequency discrepancies via 2D Discrete Fourier Transform.
     Directly sharpens high-frequency line art without spatial halos or numerical underflow.
     """
-    def __init__(self, loss_weight=0.10):
+    def __init__(self, loss_weight=0.10, alpha=1.0):
         super().__init__()
         self.loss_weight = loss_weight
+        self.alpha = alpha
 
     def forward(self, pred, target):
         pred_freq = torch.fft.rfft2(pred, norm='ortho')
