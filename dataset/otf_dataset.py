@@ -41,20 +41,22 @@ class AnimeOTFDataset(Dataset):
         return len(self.files) * self.repeat
 
     def _apply_gaussian_blur(self, img_np):
-        sigma = random.uniform(0.4, 3.2)
+        # Mild blur envelope [0.1, 1.0] to focus on fine line reconstruction (matching V11)
+        sigma = random.uniform(0.1, 1.0)
         ks = int(2 * round(3 * sigma) + 1)
         if ks % 2 == 0:
             ks += 1
         return cv2.GaussianBlur(img_np, (ks, ks), sigmaX=sigma, sigmaY=sigma)
 
     def _apply_jpeg_compression(self, img_np):
-        quality = random.randint(40, 90)
+        # High quality JPEG [70, 95] (matching V11)
+        quality = random.randint(70, 95)
         _, enc = cv2.imencode('.jpg', img_np, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         return cv2.imdecode(enc, cv2.IMREAD_COLOR)
 
     def _apply_noise(self, img_float):
-        # Sigma in [2, 20] out of 255 -> [0.0078, 0.0784]
-        sigma = random.uniform(2.0, 20.0) / 255.0
+        # Subtle noise in [1, 8] out of 255 -> [0.0039, 0.0314] (matching V11)
+        sigma = random.uniform(1.0, 8.0) / 255.0
         noise = np.random.normal(0, sigma, img_float.shape).astype(np.float32)
         return np.clip(img_float + noise, 0.0, 1.0)
 
@@ -86,11 +88,11 @@ class AnimeOTFDataset(Dataset):
             rot_k = random.choice([1, 2, 3])
             hr_patch = np.rot90(hr_patch, rot_k)
 
-        # 3. Simulate Degradation on LR
+        # 3. Simulate Mild Degradation on LR
         lr_patch = hr_patch.copy()
 
-        # A. Blur (80% chance)
-        if random.random() < 0.8:
+        # A. Mild Blur (50% chance)
+        if random.random() < 0.5:
             lr_patch = self._apply_gaussian_blur(lr_patch)
 
         # B. Downsample 2x with random kernel
@@ -103,12 +105,12 @@ class AnimeOTFDataset(Dataset):
         hr_rgb = cv2.cvtColor(hr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         lr_rgb = cv2.cvtColor(lr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
-        # C. Add Noise (60% chance)
-        if random.random() < 0.6:
+        # C. Add Subtle Noise (5% chance, matching V11)
+        if random.random() < 0.05:
             lr_rgb = self._apply_noise(lr_rgb)
 
-        # D. JPEG Compression (70% chance)
-        if random.random() < 0.7:
+        # D. JPEG Compression (20% chance, matching V11)
+        if random.random() < 0.20:
             lr_bgr_uint8 = cv2.cvtColor((lr_rgb * 255.0).clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
             lr_bgr_jpeg = self._apply_jpeg_compression(lr_bgr_uint8)
             lr_rgb = cv2.cvtColor(lr_bgr_jpeg, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
