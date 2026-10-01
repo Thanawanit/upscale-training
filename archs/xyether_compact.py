@@ -70,3 +70,30 @@ class XyetherBalancedNet(nn.Module):
         base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
         residual = self.body(x)
         return torch.clamp(base + residual, 0.0, 1.0)
+
+
+class SRVGGNetCompact(nn.Module):
+    """
+    Standard Real-ESRGAN / BasicSR SRVGGNetCompact topology (Direct reconstruction).
+    Used for native evaluation of base models like net_g_89000.pth and Xyether_V10_Blended_Clean.pth.
+    """
+    def __init__(self, num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=2):
+        super().__init__()
+        self.upscale = upscale
+        self.num_feat = num_feat
+        self.num_conv = num_conv
+
+        self.body = nn.Sequential()
+        self.body.add_module('0', nn.Conv2d(num_in_ch, num_feat, 3, 1, 1))
+        self.body.add_module('1', nn.PReLU(num_parameters=num_feat, init=0.2))
+
+        for i in range(num_conv):
+            self.body.add_module(str(2 * i + 2), nn.Conv2d(num_feat, num_feat, 3, 1, 1))
+            self.body.add_module(str(2 * i + 3), nn.PReLU(num_parameters=num_feat, init=0.2))
+
+        self.body.add_module(str(2 * num_conv + 2), nn.Conv2d(num_feat, num_out_ch * (upscale ** 2), 3, 1, 1))
+        self.body.add_module(str(2 * num_conv + 3), nn.PixelShuffle(upscale))
+
+    def forward(self, x):
+        return torch.clamp(self.body(x), 0.0, 1.0)
+

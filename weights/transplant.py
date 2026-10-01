@@ -31,12 +31,11 @@ def download_file_if_needed(url, dest_path):
     return dest
 
 
-def perform_weight_surgery(source_ckpt_path, output_ckpt_path):
+def perform_weight_surgery(source_ckpt_path, output_ckpt_path, zero_head=False):
     """
-    Performs surgery on net_g_89000:
-    1. Retains all 89,000-step anime feature representations from Conv 1 to Conv 17 (and PReLUs 1 to 17).
-    2. Zero-initializes Conv 18 (Reconstruction Head) to eliminate color blowup with Nearest Residual.
-    3. Guarantees output initially satisfies: Output = Nearest(x) + 0 = Nearest(x).
+    Transplants weights from base checkpoint (net_g_89000):
+    1. Retains all 89,000-step anime feature representations across all 53 layers.
+    2. Preserves Conv 18 weights by default to prevent PixelShuffle asymmetric checkerboard artifacts.
     """
     source_path = Path(source_ckpt_path)
     output_path = Path(output_ckpt_path)
@@ -66,14 +65,17 @@ def perform_weight_surgery(source_ckpt_path, output_ckpt_path):
         if clean_k.startswith("module."):
             clean_k = clean_k[7:]
 
-        if "34" in clean_k: # Conv 18 Reconstruction Head
+        if zero_head and "34" in clean_k: # Conv 18 Reconstruction Head
             head_keys.append(clean_k)
             new_dict[clean_k] = torch.zeros_like(v)
         else:
             new_dict[clean_k] = v.clone()
 
     print(f"[TRANSPLANT] Transplanted {len(new_dict)} layers.")
-    print(f"[TRANSPLANT] Head layers zero-initialized: {head_keys}")
+    if head_keys:
+        print(f"[TRANSPLANT] Head layers zero-initialized: {head_keys}")
+    else:
+        print(f"[TRANSPLANT] All 53 layers preserved intact (Zero-Init disabled to prevent dot grid).")
 
     # Save format compatible with BasicSR, traiNNer-redux, and native PyTorch
     torch.save({
@@ -85,13 +87,13 @@ def perform_weight_surgery(source_ckpt_path, output_ckpt_path):
     return str(output_path)
 
 
-def prepare_xyether_base(ckpt_url=DEFAULT_CKPT_URL, cache_dir="./weights"):
+def prepare_xyether_base(ckpt_url=DEFAULT_CKPT_URL, cache_dir="./weights", zero_head=False):
     cache_path = Path(cache_dir)
     source_file = cache_path / "net_g_89000.pth"
     target_file = cache_path / "xyether_transplanted_base.pth"
 
     download_file_if_needed(ckpt_url, source_file)
-    return perform_weight_surgery(source_file, target_file)
+    return perform_weight_surgery(source_file, target_file, zero_head=zero_head)
 
 
 if __name__ == "__main__":
