@@ -52,12 +52,12 @@ class MSSSIMLoss(nn.Module):
         mu2_sq = mu2.pow(2)
         mu1_mu2 = mu1 * mu2
 
-        sigma1_sq = F.conv2d(X * X, window, padding=self.win_size // 2, groups=channel) - mu1_sq
-        sigma2_sq = F.conv2d(Y * Y, window, padding=self.win_size // 2, groups=channel) - mu2_sq
+        sigma1_sq = torch.clamp(F.conv2d(X * X, window, padding=self.win_size // 2, groups=channel) - mu1_sq, min=1e-8)
+        sigma2_sq = torch.clamp(F.conv2d(Y * Y, window, padding=self.win_size // 2, groups=channel) - mu2_sq, min=1e-8)
         sigma12 = F.conv2d(X * Y, window, padding=self.win_size // 2, groups=channel) - mu1_mu2
 
-        cs_map = (2 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2)
-        ssim_map = ((2 * mu1_mu2 + C1) / (mu1_sq + mu2_sq + C1)) * cs_map
+        cs_map = torch.clamp((2 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2), min=1e-5, max=1.0)
+        ssim_map = torch.clamp(((2 * mu1_mu2 + C1) / (mu1_sq + mu2_sq + C1)) * cs_map, min=1e-5, max=1.0)
 
         return ssim_map.mean(dim=[-1, -2]), cs_map.mean(dim=[-1, -2])
 
@@ -78,11 +78,11 @@ class MSSSIMLoss(nn.Module):
         for i in range(self.levels):
             ssim_map, cs_map = self._ssim_per_channel(cur_pred, cur_target, window)
             if i < self.levels - 1:
-                mcs.append(torch.relu(cs_map))
+                mcs.append(cs_map)
                 cur_pred = F.avg_pool2d(cur_pred, kernel_size=2, stride=2, padding=0)
                 cur_target = F.avg_pool2d(cur_target, kernel_size=2, stride=2, padding=0)
             else:
-                final_ssim = torch.relu(ssim_map)
+                final_ssim = ssim_map
 
         # MS-SSIM product
         ms_ssim = final_ssim.pow(weights[-1])
@@ -186,51 +186,33 @@ class GANLoss(nn.Module):
         return self.loss_weight * loss
 
 
-class DirectionalGradientLoss(nn.Module):
+class AdjacentGradientLoss(nn.Module):
     """
-    Directional Spatial Gradient Loss (Vector Sobel).
-    Penalizes deviations in both X and Y gradient components separately,
-    preserving exact stroke orientations and anti-aliasing slopes.
+    First-Order Adjacent Gradient Loss (No Nyquist Blind Spot).
+    Computes exact 1-pixel forward differences in X and Y directions:
+      D_x(I) = I[:, :, :, 1:] - I[:, :, :, :-1]
+      D_y(I) = I[:, :, 1:, :] - I[:, :, :-1, :]
+    Penalizes gradient discrepancies with Charbonnier loss without skipping pixels,
+    completely suppressing PixelShuffle checkerboard oscillations while preserving
+    acute corners, sharp polygon tips, and subtle object rims.
     """
     def __init__(self, loss_weight=1.0, eps=1e-6):
         super().__init__()
         self.loss_weight = loss_weight
         self.charbonnier = CharbonnierLoss(eps=eps)
-        kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]]).view(1, 1, 3, 3)
-        ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]]).view(1, 1, 3, 3)
-        self.register_buffer('kx', kx)
-        self.register_buffer('ky', ky)
 
     def forward(self, pred, target):
-        c = pred.size(1)
-        kx = self.kx.repeat(c, 1, 1, 1)
-        ky = self.ky.repeat(c, 1, 1, 1)
-        gx_pred = F.conv2d(pred, kx, padding=1, groups=c)
-        gy_pred = F.conv2d(pred, ky, padding=1, groups=c)
-        gx_tar = F.conv2d(target, kx, padding=1, groups=c)
-        gy_tar = F.conv2d(target, ky, padding=1, groups=c)
-        loss_x = self.charbonnier(gx_pred, gx_tar)
-        loss_y = self.charbonnier(gy_pred, gy_tar)
+        dx_pred = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+        dx_tar = target[:, :, :, 1:] - target[:, :, :, :-1]
+        dy_pred = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        dy_tar = target[:, :, 1:, :] - target[:, :, :-1, :]
+
+        loss_x = self.charbonnier(dx_pred, dx_tar)
+        loss_y = self.charbonnier(dy_pred, dy_tar)
         return self.loss_weight * (loss_x + loss_y) * 0.5
 
 
-class LaplacianLoss(nn.Module):
-    """
-    Laplacian Curvature / Anti-Aliasing Loss.
-    Measures 2nd-order spatial derivatives (discrete Laplacian) to eliminate
-    staircase kinks, pixel jitter, and enforce smooth vector curves.
-    """
-    def __init__(self, loss_weight=1.0, eps=1e-6):
-        super().__init__()
-        self.loss_weight = loss_weight
-        self.charbonnier = CharbonnierLoss(eps=eps)
-        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]]).view(1, 1, 3, 3)
-        self.register_buffer('lap', lap)
-
-    def forward(self, pred, target):
-        c = pred.size(1)
-        lap = self.lap.repeat(c, 1, 1, 1)
-        lap_pred = F.conv2d(pred, lap, padding=1, groups=c)
-        lap_tar = F.conv2d(target, lap, padding=1, groups=c)
-        return self.loss_weight * self.charbonnier(lap_pred, lap_tar)
+class DirectionalGradientLoss(AdjacentGradientLoss):
+    """Backward compatibility alias for AdjacentGradientLoss."""
+    pass
 

@@ -24,6 +24,7 @@ from losses.xyether_losses import (
     CharbonnierLoss,
     FocalFrequencyLoss,
     GANLoss,
+    AdjacentGradientLoss,
     DirectionalGradientLoss,
     MSSSIMLoss
 )
@@ -133,8 +134,8 @@ def train_xyether(args):
 
     # 4. Loss Functions
     crit_charbonnier = CharbonnierLoss(loss_weight=1.0).to(device)
+    crit_adj_grad = AdjacentGradientLoss(loss_weight=1.0).to(device)
     crit_msssim = MSSSIMLoss(loss_weight=args.msssim_weight).to(device)
-    crit_dir_grad = DirectionalGradientLoss(loss_weight=args.grad_weight).to(device)
     crit_ffl = FocalFrequencyLoss(loss_weight=args.ffl_weight, alpha=1.0).to(device)
     crit_gan = GANLoss(loss_weight=args.gan_weight).to(device)
 
@@ -156,7 +157,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[HIGH-FIDELITY MASTER TRAIN] Starting Phase 10 Training (Target: {args.total_iters} iterations)...")
+    print(f"[TRUE VECTOR MASTER TRAIN] Starting Phase 11 Training (Target: {args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -186,29 +187,31 @@ def train_xyether(args):
                 # Seamless blended guide: 80% Strong v3 vector inking + 20% Balanced 2x shading
                 target_teacher = 0.80 * t_strong_out + 0.20 * t_bal_out
 
-            # 3. Ground Truth Structural Fidelity (Core: Preserves all subtle edges, rims & acute corners)
+            # 3. Ground Truth Structural Fidelity (100% pixel anchoring + 1-pixel adjacent gradient)
             l_gt_charb = crit_charbonnier(sr_batch, hr_batch)
+            l_gt_adj_grad = crit_adj_grad(sr_batch, hr_batch)
             l_gt_ssim = crit_msssim(sr_batch, hr_batch)
 
             # 4. Teacher Distillation (Sharp 0-ink inking and rich cel-shading)
             l_distill = crit_charbonnier(sr_batch, target_teacher)
 
-            # 5. Directional Spatial Gradient Loss (Enforces vector slope steepness from Strong v3 without corner diffusion)
-            l_dir_grad = crit_dir_grad(sr_batch, target_teacher)
+            # 5. Teacher Adjacent Vector Gradient (Transfers sharp vector slopes without Nyquist checkerboards)
+            l_teacher_adj_grad = crit_adj_grad(sr_batch, target_teacher)
 
-            # 6. Frequency Domain Loss
+            # 6. Frequency Domain Loss (Crisp fine lines)
             l_ffl = crit_ffl(sr_batch, hr_batch)
 
             # 7. Subtle UNet GAN
             d_fake = net_d(sr_batch)
             l_gan_g = crit_gan(d_fake, is_real=True)
 
-            # Combined Objective: 70%+ Ground Truth Fidelity + Vector Inking Slopes (NO Laplacian Diffusion!)
+            # Combined Objective: Full 1.0 GT Fidelity + Non-blind Adjacent Gradients + Pitch-black Distillation
             total_loss_g = (
-                0.50 * l_gt_charb +
+                1.00 * l_gt_charb +
+                0.25 * l_gt_adj_grad +
                 l_gt_ssim +
                 0.40 * l_distill +
-                l_dir_grad +
+                0.25 * l_teacher_adj_grad +
                 l_ffl +
                 l_gan_g
             )
@@ -224,7 +227,7 @@ def train_xyether(args):
         # ----------------- Step B: Train Discriminator -----------------
         optim_d.zero_grad()
         with torch.amp.autocast(autocast_device, enabled=args.use_amp and torch.cuda.is_available()):
-            d_real = net_d(hr_batch)
+            d_real = net_d(target_teacher.detach())
             d_fake_detached = net_d(sr_batch.detach())
 
             l_d_real = crit_gan(d_real, is_real=True)
@@ -246,7 +249,7 @@ def train_xyether(args):
             ips = step / max(1, elapsed)
             print(
                 f"[Step {step:5d}/{args.total_iters}] "
-                f"G_Loss: {total_loss_g.item():.4f} (GT: {l_gt_charb.item():.4f}, SSIM: {l_gt_ssim.item():.4f}, Distill: {l_distill.item():.4f}, DirGrad: {l_dir_grad.item():.4f}) | "
+                f"G_Loss: {total_loss_g.item():.4f} (GT: {l_gt_charb.item():.4f}, AdjGrad: {l_gt_adj_grad.item():.4f}, SSIM: {l_gt_ssim.item():.4f}, Distill: {l_distill.item():.4f}) | "
                 f"D_Loss: {total_loss_d.item():.4f} | LR: {sched_g.get_last_lr()[0]:.2e} | Speed: {ips:.2f} it/s"
             )
 
@@ -272,7 +275,7 @@ def train_xyether(args):
 
         # Checkpointing
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyether_master_step_{step}.pth"
+            ckpt_path = out_dir / f"xyether_vector_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': net_g.state_dict(),
@@ -300,16 +303,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase10_HighFidelity_Master/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase11_TrueVector_Master/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase10_HighFidelity_Master/{ckpt_path.name})")
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase11_TrueVector_Master/{ckpt_path.name})")
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}")
 
     # Export Final Production Model to ONNX & PyTorch
-    final_pth = out_dir / "Xyether_Master_v4_Final.pth"
+    final_pth = out_dir / "Xyether_TrueVector_v5_Final.pth"
     torch.save({"params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}")
 
@@ -321,7 +324,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase10_HighFidelity_Master/Xyether_Master_v4_Final.pth",
+                path_in_repo="checkpoints/Phase11_TrueVector_Master/Xyether_TrueVector_v5_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -330,7 +333,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}")
 
     try:
-        final_onnx = out_dir / "Xyether_Master_v4_Final.onnx"
+        final_onnx = out_dir / "Xyether_TrueVector_v5_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         with torch.no_grad():
             torch.onnx.export(
@@ -349,7 +352,7 @@ def train_xyether(args):
         if hf_token and hf_repo:
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase10_HighFidelity_Master/Xyether_Master_v4_Final.onnx",
+                path_in_repo="checkpoints/Phase11_TrueVector_Master/Xyether_TrueVector_v5_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -357,11 +360,11 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}")
 
-    print("\n[COMPLETE] Phase 10 High-Fidelity Master training successfully finished!")
+    print("\n[COMPLETE] Phase 11 True Vector Master training successfully finished!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Xyether High-Fidelity Master Series (Phase 10)")
+    parser = argparse.ArgumentParser(description="Train Xyether True Vector Master Series (Phase 11)")
     parser.add_argument("--data_dir", type=str, default="/content/dataset", help="Dataset folder")
     parser.add_argument("--pretrained_path", type=str, default="./weights/Xyether_UltraSharp_v2_Final.pth", help="Base student checkpoint")
     parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase8_UltraSharp_Hybrid/Xyether_UltraSharp_v2_Final.pth", help="Student warm-start URL")
