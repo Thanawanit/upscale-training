@@ -186,6 +186,36 @@ class GANLoss(nn.Module):
         return self.loss_weight * loss
 
 
+class VGGPerceptualLoss(nn.Module):
+    """
+    VGG19 conv4_4 Perceptual Loss.
+    Enforces deep semantic line art and texture alignment without causing pixel-averaging blur.
+    """
+    def __init__(self, loss_weight=0.20):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.vgg = None
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def _lazy_init_vgg(self, device):
+        if self.vgg is None:
+            from torchvision.models import vgg19, VGG19_Weights
+            vgg = vgg19(weights=VGG19_Weights.DEFAULT).features[:27].eval().to(device)
+            for p in vgg.parameters():
+                p.requires_grad = False
+            self.vgg = vgg
+
+    def forward(self, pred, target):
+        device = pred.device
+        self._lazy_init_vgg(device)
+        pred_norm = (pred - self.mean.to(device)) / self.std.to(device)
+        tar_norm = (target - self.mean.to(device)) / self.std.to(device)
+        feat_pred = self.vgg(pred_norm)
+        feat_tar = self.vgg(tar_norm)
+        return self.loss_weight * F.l1_loss(feat_pred, feat_tar)
+
+
 class AdjacentGradientLoss(nn.Module):
     """
     First-Order Adjacent Gradient Loss (No Nyquist Blind Spot).
