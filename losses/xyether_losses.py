@@ -184,3 +184,53 @@ class GANLoss(nn.Module):
         target = torch.ones_like(d_pred) if is_real else torch.zeros_like(d_pred)
         loss = self.bce(d_pred, target)
         return self.loss_weight * loss
+
+
+class DirectionalGradientLoss(nn.Module):
+    """
+    Directional Spatial Gradient Loss (Vector Sobel).
+    Penalizes deviations in both X and Y gradient components separately,
+    preserving exact stroke orientations and anti-aliasing slopes.
+    """
+    def __init__(self, loss_weight=1.0, eps=1e-6):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.charbonnier = CharbonnierLoss(eps=eps)
+        kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]]).view(1, 1, 3, 3)
+        ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]]).view(1, 1, 3, 3)
+        self.register_buffer('kx', kx)
+        self.register_buffer('ky', ky)
+
+    def forward(self, pred, target):
+        c = pred.size(1)
+        kx = self.kx.repeat(c, 1, 1, 1)
+        ky = self.ky.repeat(c, 1, 1, 1)
+        gx_pred = F.conv2d(pred, kx, padding=1, groups=c)
+        gy_pred = F.conv2d(pred, ky, padding=1, groups=c)
+        gx_tar = F.conv2d(target, kx, padding=1, groups=c)
+        gy_tar = F.conv2d(target, ky, padding=1, groups=c)
+        loss_x = self.charbonnier(gx_pred, gx_tar)
+        loss_y = self.charbonnier(gy_pred, gy_tar)
+        return self.loss_weight * (loss_x + loss_y) * 0.5
+
+
+class LaplacianLoss(nn.Module):
+    """
+    Laplacian Curvature / Anti-Aliasing Loss.
+    Measures 2nd-order spatial derivatives (discrete Laplacian) to eliminate
+    staircase kinks, pixel jitter, and enforce smooth vector curves.
+    """
+    def __init__(self, loss_weight=1.0, eps=1e-6):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.charbonnier = CharbonnierLoss(eps=eps)
+        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]]).view(1, 1, 3, 3)
+        self.register_buffer('lap', lap)
+
+    def forward(self, pred, target):
+        c = pred.size(1)
+        lap = self.lap.repeat(c, 1, 1, 1)
+        lap_pred = F.conv2d(pred, lap, padding=1, groups=c)
+        lap_tar = F.conv2d(target, lap, padding=1, groups=c)
+        return self.loss_weight * self.charbonnier(lap_pred, lap_tar)
+

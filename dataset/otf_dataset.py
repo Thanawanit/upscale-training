@@ -95,8 +95,11 @@ class AnimeOTFDataset(Dataset):
         if random.random() < 0.5:
             lr_patch = self._apply_gaussian_blur(lr_patch)
 
-        # B. Downsample 2x with random kernel
-        interp = random.choice([cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC])
+        # B. Downsample 2x with random kernel (including 10% Nearest for de-aliasing training)
+        interp = random.choices(
+            [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_NEAREST],
+            weights=[0.35, 0.30, 0.25, 0.10]
+        )[0]
         lr_h = self.patch_size // 2
         lr_w = self.patch_size // 2
         lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
