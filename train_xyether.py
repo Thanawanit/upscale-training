@@ -25,7 +25,7 @@ from losses.xyether_losses import (
     FocalFrequencyLoss,
     GANLoss,
     DirectionalGradientLoss,
-    LaplacianLoss
+    MSSSIMLoss
 )
 from dataset.otf_dataset import AnimeOTFDataset
 from dataset.download_dataset import download_and_extract_dataset
@@ -54,7 +54,7 @@ class ModelEMA:
 
 def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"[VECTOR ANTI-ALIASED TRAIN] Initializing Phase 9 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    print(f"[HIGH-FIDELITY MASTER TRAIN] Initializing Phase 10 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +63,7 @@ def train_xyether(args):
 
     drive_backup_dir = None
     if os.path.exists("/content/drive/MyDrive"):
-        drive_backup_dir = Path("/content/drive/MyDrive/Xyether_Checkpoints/AntiAliased")
+        drive_backup_dir = Path("/content/drive/MyDrive/Xyether_Checkpoints/Master")
         drive_backup_dir.mkdir(parents=True, exist_ok=True)
         print(f"[DRIVE] Google Drive backup active -> {drive_backup_dir}")
 
@@ -133,8 +133,8 @@ def train_xyether(args):
 
     # 4. Loss Functions
     crit_charbonnier = CharbonnierLoss(loss_weight=1.0).to(device)
+    crit_msssim = MSSSIMLoss(loss_weight=args.msssim_weight).to(device)
     crit_dir_grad = DirectionalGradientLoss(loss_weight=args.grad_weight).to(device)
-    crit_lap = LaplacianLoss(loss_weight=args.lap_weight).to(device)
     crit_ffl = FocalFrequencyLoss(loss_weight=args.ffl_weight, alpha=1.0).to(device)
     crit_gan = GANLoss(loss_weight=args.gan_weight).to(device)
 
@@ -156,7 +156,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[VECTOR ANTI-ALIASED TRAIN] Starting Phase 9 Training (Target: {args.total_iters} iterations)...")
+    print(f"[HIGH-FIDELITY MASTER TRAIN] Starting Phase 10 Training (Target: {args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -183,35 +183,32 @@ def train_xyether(args):
             with torch.no_grad():
                 t_strong_out = teacher_strong(lr_batch)
                 t_bal_out = teacher_bal(lr_batch)
-                # Seamless continuous blended target: 80% Strong v3 vector inking + 20% Balanced 2x smooth shading
-                # Eliminates any hard mask boundaries or pixel-to-pixel jitter
-                target_unified = 0.80 * t_strong_out + 0.20 * t_bal_out
+                # Seamless blended guide: 80% Strong v3 vector inking + 20% Balanced 2x shading
+                target_teacher = 0.80 * t_strong_out + 0.20 * t_bal_out
 
-            # 3. Seamless Unified Distillation Loss (Full-frame Charbonnier)
-            l_distill = crit_charbonnier(sr_batch, target_unified)
+            # 3. Ground Truth Structural Fidelity (Core: Preserves all subtle edges, rims & acute corners)
+            l_gt_charb = crit_charbonnier(sr_batch, hr_batch)
+            l_gt_ssim = crit_msssim(sr_batch, hr_batch)
 
-            # 4. Ground Truth Color Anchor (Keeps original palette intact without conflicting with inking)
-            l_gt = crit_charbonnier(sr_batch, hr_batch)
+            # 4. Teacher Distillation (Sharp 0-ink inking and rich cel-shading)
+            l_distill = crit_charbonnier(sr_batch, target_teacher)
 
-            # 5. Directional Spatial Gradient Loss (Enforces vector slope angles and crisp edges)
-            l_dir_grad = crit_dir_grad(sr_batch, target_unified)
+            # 5. Directional Spatial Gradient Loss (Enforces vector slope steepness from Strong v3 without corner diffusion)
+            l_dir_grad = crit_dir_grad(sr_batch, target_teacher)
 
-            # 6. Laplacian Curvature / Anti-Aliasing Loss (Penalizes staircase kinks & pixel jitter)
-            l_lap = crit_lap(sr_batch, target_unified)
+            # 6. Frequency Domain Loss
+            l_ffl = crit_ffl(sr_batch, hr_batch)
 
-            # 7. Fourier Frequency Domain Loss
-            l_ffl = crit_ffl(sr_batch, target_unified)
-
-            # 8. Subtle UNet GAN
+            # 7. Subtle UNet GAN
             d_fake = net_d(sr_batch)
             l_gan_g = crit_gan(d_fake, is_real=True)
 
-            # Combined Objective: Anti-Aliased Vector Line Art + Faithful Shading
+            # Combined Objective: 70%+ Ground Truth Fidelity + Vector Inking Slopes (NO Laplacian Diffusion!)
             total_loss_g = (
-                1.00 * l_distill +
-                0.15 * l_gt +
+                0.50 * l_gt_charb +
+                l_gt_ssim +
+                0.40 * l_distill +
                 l_dir_grad +
-                l_lap +
                 l_ffl +
                 l_gan_g
             )
@@ -227,7 +224,7 @@ def train_xyether(args):
         # ----------------- Step B: Train Discriminator -----------------
         optim_d.zero_grad()
         with torch.amp.autocast(autocast_device, enabled=args.use_amp and torch.cuda.is_available()):
-            d_real = net_d(target_unified.detach())
+            d_real = net_d(hr_batch)
             d_fake_detached = net_d(sr_batch.detach())
 
             l_d_real = crit_gan(d_real, is_real=True)
@@ -249,7 +246,7 @@ def train_xyether(args):
             ips = step / max(1, elapsed)
             print(
                 f"[Step {step:5d}/{args.total_iters}] "
-                f"G_Loss: {total_loss_g.item():.4f} (Distill: {l_distill.item():.4f}, DirGrad: {l_dir_grad.item():.4f}, Lap: {l_lap.item():.4f}) | "
+                f"G_Loss: {total_loss_g.item():.4f} (GT: {l_gt_charb.item():.4f}, SSIM: {l_gt_ssim.item():.4f}, Distill: {l_distill.item():.4f}, DirGrad: {l_dir_grad.item():.4f}) | "
                 f"D_Loss: {total_loss_d.item():.4f} | LR: {sched_g.get_last_lr()[0]:.2e} | Speed: {ips:.2f} it/s"
             )
 
@@ -275,7 +272,7 @@ def train_xyether(args):
 
         # Checkpointing
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyether_antialiased_step_{step}.pth"
+            ckpt_path = out_dir / f"xyether_master_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': net_g.state_dict(),
@@ -303,16 +300,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase9_AntiAliased_Vector/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase10_HighFidelity_Master/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase9_AntiAliased_Vector/{ckpt_path.name})")
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase10_HighFidelity_Master/{ckpt_path.name})")
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}")
 
     # Export Final Production Model to ONNX & PyTorch
-    final_pth = out_dir / "Xyether_AntiAliased_v3_Final.pth"
+    final_pth = out_dir / "Xyether_Master_v4_Final.pth"
     torch.save({"params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}")
 
@@ -324,7 +321,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase9_AntiAliased_Vector/Xyether_AntiAliased_v3_Final.pth",
+                path_in_repo="checkpoints/Phase10_HighFidelity_Master/Xyether_Master_v4_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -333,22 +330,26 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}")
 
     try:
-        final_onnx = out_dir / "Xyether_AntiAliased_v3_Final.onnx"
+        final_onnx = out_dir / "Xyether_Master_v4_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
-        torch.onnx.export(
-            ema_g.model,
-            dummy_in,
-            str(final_onnx),
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch", 2: "height", 3: "width"}, "output": {0: "batch", 2: "height", 3: "width"}},
-            opset_version=14
-        )
+        with torch.no_grad():
+            torch.onnx.export(
+                ema_g.model,
+                dummy_in,
+                str(final_onnx),
+                export_params=True,
+                opset_version=17,
+                do_constant_folding=True,
+                input_names=["input"],
+                output_names=["output"],
+                dynamic_axes={"input": {0: "batch", 2: "height", 3: "width"}, "output": {0: "batch", 2: "height", 3: "width"}},
+                dynamo=False
+            )
         print(f"[FINAL EXPORT] Production ONNX graph saved -> {final_onnx}")
         if hf_token and hf_repo:
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase9_AntiAliased_Vector/Xyether_AntiAliased_v3_Final.onnx",
+                path_in_repo="checkpoints/Phase10_HighFidelity_Master/Xyether_Master_v4_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -356,11 +357,11 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}")
 
-    print("\n[COMPLETE] Phase 9 Vector Anti-Aliased training successfully finished!")
+    print("\n[COMPLETE] Phase 10 High-Fidelity Master training successfully finished!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Xyether Vector Anti-Aliased Series (Phase 9)")
+    parser = argparse.ArgumentParser(description="Train Xyether High-Fidelity Master Series (Phase 10)")
     parser.add_argument("--data_dir", type=str, default="/content/dataset", help="Dataset folder")
     parser.add_argument("--pretrained_path", type=str, default="./weights/Xyether_UltraSharp_v2_Final.pth", help="Base student checkpoint")
     parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase8_UltraSharp_Hybrid/Xyether_UltraSharp_v2_Final.pth", help="Student warm-start URL")
@@ -370,10 +371,10 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=12, help="Batch size")
     parser.add_argument("--patch_size", type=int, default=192, help="HR Patch size")
     parser.add_argument("--total_iters", type=int, default=6000, help="Total iterations")
-    parser.add_argument("--lr_g", type=float, default=1.5e-5, help="Generator learning rate")
-    parser.add_argument("--lr_d", type=float, default=1.5e-5, help="Discriminator learning rate")
-    parser.add_argument("--grad_weight", type=float, default=0.35, help="Directional gradient loss weight")
-    parser.add_argument("--lap_weight", type=float, default=0.35, help="Laplacian curvature loss weight")
+    parser.add_argument("--lr_g", type=float, default=2.0e-5, help="Generator learning rate")
+    parser.add_argument("--lr_d", type=float, default=2.0e-5, help="Discriminator learning rate")
+    parser.add_argument("--msssim_weight", type=float, default=0.20, help="MS-SSIM structural loss weight")
+    parser.add_argument("--grad_weight", type=float, default=0.25, help="Directional gradient loss weight")
     parser.add_argument("--ffl_weight", type=float, default=0.10, help="Fourier frequency loss weight")
     parser.add_argument("--gan_weight", type=float, default=0.0005, help="GAN loss weight")
     parser.add_argument("--ema_decay", type=float, default=0.9995, help="EMA decay")
