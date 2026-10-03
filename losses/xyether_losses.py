@@ -188,32 +188,44 @@ class GANLoss(nn.Module):
 
 class VGGPerceptualLoss(nn.Module):
     """
-    VGG19 conv4_4 Perceptual Loss.
-    Enforces deep semantic line art and texture alignment without causing pixel-averaging blur.
+    Multi-Layer VGG19 Perceptual Loss (conv1_2, conv2_2, conv3_4, conv4_4).
+    Shallow layers capture 1-pixel high-resolution edge details,
+    while deep layers preserve semantic textures.
     """
     def __init__(self, loss_weight=0.20):
         super().__init__()
         self.loss_weight = loss_weight
-        self.vgg = None
+        self.slice1 = None
+        self.slice2 = None
+        self.slice3 = None
+        self.slice4 = None
         self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
     def _lazy_init_vgg(self, device):
-        if self.vgg is None:
+        if self.slice1 is None:
             from torchvision.models import vgg19, VGG19_Weights
-            vgg = vgg19(weights=VGG19_Weights.DEFAULT).features[:27].eval().to(device)
+            vgg = vgg19(weights=VGG19_Weights.DEFAULT).features.eval().to(device)
             for p in vgg.parameters():
                 p.requires_grad = False
-            self.vgg = vgg
+            self.slice1 = vgg[:4]    # conv1_2
+            self.slice2 = vgg[4:9]   # conv2_2
+            self.slice3 = vgg[9:18]  # conv3_4
+            self.slice4 = vgg[18:27] # conv4_4
 
     def forward(self, pred, target):
         device = pred.device
         self._lazy_init_vgg(device)
-        pred_norm = (pred - self.mean.to(device)) / self.std.to(device)
-        tar_norm = (target - self.mean.to(device)) / self.std.to(device)
-        feat_pred = self.vgg(pred_norm)
-        feat_tar = self.vgg(tar_norm)
-        return self.loss_weight * F.l1_loss(feat_pred, feat_tar)
+        p = (pred - self.mean.to(device)) / self.std.to(device)
+        t = (target - self.mean.to(device)) / self.std.to(device)
+
+        p1 = self.slice1(p); t1 = self.slice1(t)
+        p2 = self.slice2(p1); t2 = self.slice2(t1)
+        p3 = self.slice3(p2); t3 = self.slice3(t2)
+        p4 = self.slice4(p3); t4 = self.slice4(t3)
+
+        loss = 0.1 * F.l1_loss(p1, t1) + 0.1 * F.l1_loss(p2, t2) + 0.4 * F.l1_loss(p3, t3) + 0.4 * F.l1_loss(p4, t4)
+        return self.loss_weight * loss
 
 
 class AdjacentGradientLoss(nn.Module):
@@ -222,9 +234,6 @@ class AdjacentGradientLoss(nn.Module):
     Computes exact 1-pixel forward differences in X and Y directions:
       D_x(I) = I[:, :, :, 1:] - I[:, :, :, :-1]
       D_y(I) = I[:, :, 1:, :] - I[:, :, :-1, :]
-    Penalizes gradient discrepancies with Charbonnier loss without skipping pixels,
-    completely suppressing PixelShuffle checkerboard oscillations while preserving
-    acute corners, sharp polygon tips, and subtle object rims.
     """
     def __init__(self, loss_weight=1.0, eps=1e-6):
         super().__init__()
@@ -240,6 +249,53 @@ class AdjacentGradientLoss(nn.Module):
         loss_x = self.charbonnier(dx_pred, dx_tar)
         loss_y = self.charbonnier(dy_pred, dy_tar)
         return self.loss_weight * (loss_x + loss_y) * 0.5
+
+
+class MaskedInkingLoss(nn.Module):
+    """
+    Masked High-Frequency Inking & Line Art Darkness Loss.
+    1. Focuses 1-pixel adjacent gradient loss ONLY on line art edges (prevents background dilution).
+    2. Penalizes whenever student's lines are lighter/faded/grey compared to Strong v3:
+       L_ink = (ReLU(pred - target) * M).sum() / (M.sum() + eps)
+    Forces needle-sharp edges (Edge Slope >= 900) and pitch-black ink (min_ink = 0).
+    """
+    def __init__(self, grad_weight=0.35, ink_weight=0.25, threshold=0.10, eps=1e-6):
+        super().__init__()
+        self.grad_weight = grad_weight
+        self.ink_weight = ink_weight
+        self.threshold = threshold
+        self.eps = eps
+
+    def forward(self, pred, target):
+        # 1. Adjacent differences
+        dx_pred = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+        dx_tar = target[:, :, :, 1:] - target[:, :, :, :-1]
+        dy_pred = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        dy_tar = target[:, :, 1:, :] - target[:, :, :-1, :]
+
+        # 2. Dynamic Edge Mask from Teacher
+        mag_x = dx_tar.abs().mean(dim=1, keepdim=True)
+        mag_y = dy_tar.abs().mean(dim=1, keepdim=True)
+        mask_x = (mag_x > self.threshold).float()
+        mask_y = (mag_y > self.threshold).float()
+
+        # 3. Masked Gradient Loss (Concentrated on actual lines)
+        diff_x = torch.sqrt((dx_pred - dx_tar) ** 2 + self.eps ** 2)
+        diff_y = torch.sqrt((dy_pred - dy_tar) ** 2 + self.eps ** 2)
+
+        loss_gx = (diff_x * mask_x).sum() / (mask_x.sum() + self.eps)
+        loss_gy = (diff_y * mask_y).sum() / (mask_y.sum() + self.eps)
+        loss_grad = (loss_gx + loss_gy) * 0.5
+
+        # 4. Inking Darkness Penalty (Student must NOT be lighter than Strong v3 on line art)
+        edge_mask = torch.zeros_like(pred)
+        edge_mask[:, :, :, 1:] = torch.maximum(edge_mask[:, :, :, 1:], mask_x)
+        edge_mask[:, :, 1:, :] = torch.maximum(edge_mask[:, :, 1:, :], mask_y)
+
+        l_ink = F.relu(pred - target)
+        loss_ink = (l_ink * edge_mask).sum() / (edge_mask.sum() + self.eps)
+
+        return self.grad_weight * loss_grad + self.ink_weight * loss_ink
 
 
 class DirectionalGradientLoss(AdjacentGradientLoss):

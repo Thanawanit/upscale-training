@@ -27,7 +27,8 @@ from losses.xyether_losses import (
     AdjacentGradientLoss,
     DirectionalGradientLoss,
     MSSSIMLoss,
-    VGGPerceptualLoss
+    VGGPerceptualLoss,
+    MaskedInkingLoss
 )
 from dataset.otf_dataset import AnimeOTFDataset
 from dataset.download_dataset import download_and_extract_dataset
@@ -148,10 +149,10 @@ def train_xyether(args):
         p.requires_grad = False
     print("✅ Teacher B (Balanced 2x - Smooth Shading Guide) loaded & frozen.")
 
-    # 4. Loss Functions (Active GAN + VGG Perceptual + Strong Teacher Inking)
+    # 4. Loss Functions (Active GAN + Multi-Layer VGG Perceptual + Masked Teacher Inking)
     crit_pixel = CharbonnierLoss(loss_weight=1.0).to(device)
     crit_vgg = VGGPerceptualLoss(loss_weight=1.0).to(device)
-    crit_adj_grad = AdjacentGradientLoss(loss_weight=1.0).to(device)
+    crit_masked_ink = MaskedInkingLoss(grad_weight=args.grad_weight, ink_weight=args.ink_weight, threshold=0.10).to(device)
     crit_gan = GANLoss(loss_weight=1.0).to(device)
 
     # 5. Optimizers with Stable Learning Rate
@@ -172,7 +173,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[XYETHERKILLER MASTER TRAIN] Starting Phase 12 Training (Target: {args.total_iters} iterations)...")
+    print(f"[XYETHERKILLER INKING MASTER] Starting Phase 13 Training (Target: {args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -209,8 +210,8 @@ def train_xyether(args):
             # B. VGG19 conv4_4 Perceptual Loss (Deep structural feature alignment)
             l_percep = crit_vgg(sr_batch, hr_batch)
 
-            # C. Teacher Inking Gradient Loss (Forces edge steepness to match Strong v3: >= 150)
-            l_teacher_grad = crit_adj_grad(sr_batch, t_strong_out)
+            # C. Masked Inking & Gradient Loss (Forces needle-sharp edges and pitch-black ink from Strong v3)
+            l_teacher_ink = crit_masked_ink(sr_batch, t_strong_out)
 
             # D. Teacher Clean Flat Shading Loss (Forces smooth cel shading from Balanced 2x)
             l_teacher_shade = crit_pixel(sr_batch, target_teacher)
@@ -219,11 +220,11 @@ def train_xyether(args):
             d_fake = net_d(sr_batch)
             l_gan_g = crit_gan(d_fake, is_real=True)
 
-            # Combined Objective: Real-ESRGAN Balance + Strong Line Art Inking
+            # Combined Objective: Real-ESRGAN Balance + Masked Line Art Inking
             total_loss_g = (
                 args.pixel_weight * l_pixel +
                 args.percep_weight * l_percep +
-                args.grad_weight * l_teacher_grad +
+                l_teacher_ink +
                 args.shade_weight * l_teacher_shade +
                 args.gan_weight * l_gan_g
             )
@@ -261,7 +262,7 @@ def train_xyether(args):
             ips = step / max(1, elapsed)
             print(
                 f"[Step {step:5d}/{args.total_iters}] "
-                f"G_Loss: {total_loss_g.item():.4f} (Pix: {l_pixel.item():.4f}, Percep: {l_percep.item():.4f}, TGrad: {l_teacher_grad.item():.4f}, GAN: {l_gan_g.item():.4f}) | "
+                f"G_Loss: {total_loss_g.item():.4f} (Pix: {l_pixel.item():.4f}, Percep: {l_percep.item():.4f}, TInk: {l_teacher_ink.item():.4f}, GAN: {l_gan_g.item():.4f}) | "
                 f"D_Loss: {total_loss_d.item():.4f} | LR: {sched_g.get_last_lr()[0]:.2e} | Speed: {ips:.2f} it/s"
             )
 
@@ -287,7 +288,7 @@ def train_xyether(args):
 
         # Checkpointing
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyetherkiller_master_step_{step}.pth"
+            ckpt_path = out_dir / f"xyetherkiller_inking_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': net_g.state_dict(),
@@ -315,16 +316,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase12_XyetherKiller_Master/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase13_XyetherKiller_InkingMaster/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase12_XyetherKiller_Master/{ckpt_path.name})")
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase13_XyetherKiller_InkingMaster/{ckpt_path.name})")
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}")
 
     # Export Final Production Model to ONNX & PyTorch
-    final_pth = out_dir / "XyetherKiller_Master_v6_Final.pth"
+    final_pth = out_dir / "XyetherKiller_InkingMaster_v7_Final.pth"
     torch.save({"params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}")
 
@@ -336,7 +337,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase12_XyetherKiller_Master/XyetherKiller_Master_v6_Final.pth",
+                path_in_repo="checkpoints/Phase13_XyetherKiller_InkingMaster/XyetherKiller_InkingMaster_v7_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -345,7 +346,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}")
 
     try:
-        final_onnx = out_dir / "XyetherKiller_Master_v6_Final.onnx"
+        final_onnx = out_dir / "XyetherKiller_InkingMaster_v7_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         with torch.no_grad():
             torch.onnx.export(
@@ -364,7 +365,7 @@ def train_xyether(args):
         if hf_token and hf_repo:
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase12_XyetherKiller_Master/XyetherKiller_Master_v6_Final.onnx",
+                path_in_repo="checkpoints/Phase13_XyetherKiller_InkingMaster/XyetherKiller_InkingMaster_v7_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -372,11 +373,11 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}")
 
-    print("\n[COMPLETE] Phase 12 XyetherKiller Master training successfully finished!")
+    print("\n[COMPLETE] Phase 13 XyetherKiller Inking Master training successfully finished!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train XyetherKiller Master Series (Phase 12)")
+    parser = argparse.ArgumentParser(description="Train XyetherKiller Inking Master Series (Phase 13)")
     parser.add_argument("--data_dir", type=str, default="/content/dataset", help="Dataset folder")
     parser.add_argument("--pretrained_path", type=str, default="./weights/net_g_89000.pth", help="Base student checkpoint")
     parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase4_XyetherKiller_V11/net_g_89000.pth", help="Student warm-start URL")
@@ -390,11 +391,12 @@ if __name__ == "__main__":
     parser.add_argument("--total_iters", type=int, default=6000, help="Total iterations")
     parser.add_argument("--lr_g", type=float, default=1.5e-5, help="Generator learning rate")
     parser.add_argument("--lr_d", type=float, default=1.0e-5, help="Discriminator learning rate")
-    parser.add_argument("--pixel_weight", type=float, default=0.12, help="Pixel anchor Charbonnier weight")
-    parser.add_argument("--percep_weight", type=float, default=0.20, help="VGG19 perceptual loss weight")
-    parser.add_argument("--grad_weight", type=float, default=0.35, help="Teacher adjacent gradient inking weight")
+    parser.add_argument("--pixel_weight", type=float, default=0.10, help="Pixel anchor Charbonnier weight")
+    parser.add_argument("--percep_weight", type=float, default=0.20, help="Multi-layer VGG19 perceptual loss weight")
+    parser.add_argument("--grad_weight", type=float, default=0.40, help="Teacher masked adjacent gradient weight")
+    parser.add_argument("--ink_weight", type=float, default=0.35, help="Teacher direct inking darkness weight")
     parser.add_argument("--shade_weight", type=float, default=0.20, help="Teacher clean flat shading weight")
-    parser.add_argument("--gan_weight", type=float, default=0.12, help="Active UNet Discriminator GAN weight")
+    parser.add_argument("--gan_weight", type=float, default=0.15, help="Active UNet Discriminator GAN weight")
     parser.add_argument("--ema_decay", type=float, default=0.9995, help="EMA decay")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use FP16 AMP")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
