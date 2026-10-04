@@ -59,7 +59,7 @@ class ModelEMA:
 
 def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"[XYETHERKILLER MASTER TRAIN] Initializing Phase 12 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    print(f"[XYETHERKILLER VECTOR CLEAN] Initializing Phase 14 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
