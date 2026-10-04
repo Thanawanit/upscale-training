@@ -298,6 +298,30 @@ class MaskedInkingLoss(nn.Module):
         return self.grad_weight * loss_grad + self.ink_weight * loss_ink
 
 
+class LaplacianLoss(nn.Module):
+    """
+    Laplacian 2nd-Order Curvature Loss.
+    Measures 2nd-order spatial derivatives (discrete Laplacian) to eliminate
+    staircase kinks, pixel jitter, and enforce smooth vector curves along line art.
+    """
+    def __init__(self, loss_weight=1.0, eps=1e-6):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.eps = eps
+        lap = torch.tensor([[0., 1., 0.], [1., -4., 1.], [0., 1., 0.]]).view(1, 1, 3, 3)
+        self.register_buffer('lap', lap)
+
+    def forward(self, pred, target, mask=None):
+        c = pred.size(1)
+        lap = self.lap.repeat(c, 1, 1, 1).to(pred.device)
+        lap_pred = F.conv2d(pred, lap, padding=1, groups=c)
+        lap_tar = F.conv2d(target, lap, padding=1, groups=c)
+        diff = torch.sqrt((lap_pred - lap_tar) ** 2 + self.eps ** 2)
+        if mask is not None:
+            return self.loss_weight * (diff * mask).sum() / (mask.sum() + 1e-6)
+        return self.loss_weight * diff.mean()
+
+
 class DirectionalGradientLoss(AdjacentGradientLoss):
     """Backward compatibility alias for AdjacentGradientLoss."""
     pass
