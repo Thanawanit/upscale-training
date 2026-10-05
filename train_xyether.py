@@ -307,7 +307,7 @@ def train_xyether(args):
 
         # Checkpointing
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyetherkiller_vectorclean_step_{step}.pth"
+            ckpt_path = out_dir / f"xyetherkiller_refinedmaster_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': net_g.state_dict(),
@@ -335,7 +335,7 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase14_XyetherKiller_VectorClean/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase15_XyetherKiller_RefinedMaster/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
