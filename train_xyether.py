@@ -59,7 +59,7 @@ class ModelEMA:
 
 def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"[XYETHERKILLER VECTOR CLEAN] Initializing Phase 14 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    print(f"[XYETHERKILLER REFINED MASTER] Initializing Phase 15 on: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -177,7 +177,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[XYETHERKILLER VECTOR CLEAN] Starting Phase 14 Training (Target: {args.total_iters} iterations)...")
+    print(f"[XYETHERKILLER REFINED MASTER] Starting Phase 15 Training (Target: {args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -339,12 +339,12 @@ def train_xyether(args):
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase14_XyetherKiller_VectorClean/{ckpt_path.name})")
+                    print(f"[HF] Backed up to Hugging Face -> {hf_repo} (checkpoints/Phase15_XyetherKiller_RefinedMaster/{ckpt_path.name})")
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}")
 
     # Export Final Production Model to ONNX & PyTorch
-    final_pth = out_dir / "XyetherKiller_VectorClean_v8_Final.pth"
+    final_pth = out_dir / "XyetherKiller_RefinedMaster_v9_Final.pth"
     torch.save({"params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}")
 
@@ -356,7 +356,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase14_XyetherKiller_VectorClean/XyetherKiller_VectorClean_v8_Final.pth",
+                path_in_repo="checkpoints/Phase15_XyetherKiller_RefinedMaster/XyetherKiller_RefinedMaster_v9_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -365,7 +365,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}")
 
     try:
-        final_onnx = out_dir / "XyetherKiller_VectorClean_v8_Final.onnx"
+        final_onnx = out_dir / "XyetherKiller_RefinedMaster_v9_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         with torch.no_grad():
             torch.onnx.export(
@@ -384,7 +384,7 @@ def train_xyether(args):
         if hf_token and hf_repo:
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase14_XyetherKiller_VectorClean/XyetherKiller_VectorClean_v8_Final.onnx",
+                path_in_repo="checkpoints/Phase15_XyetherKiller_RefinedMaster/XyetherKiller_RefinedMaster_v9_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -392,32 +392,32 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}")
 
-    print("\n[COMPLETE] Phase 14 XyetherKiller Vector Clean training successfully finished!")
+    print("\n[COMPLETE] Phase 15 XyetherKiller Refined Master training successfully finished!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train XyetherKiller Vector Clean Series (Phase 14)")
+    parser = argparse.ArgumentParser(description="Train XyetherKiller Refined Master Series (Phase 15)")
     parser.add_argument("--data_dir", type=str, default="/content/dataset", help="Dataset folder")
-    parser.add_argument("--pretrained_path", type=str, default="./weights/XyetherKiller_InkingMaster_v7_Final.pth", help="Base student checkpoint")
-    parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase13_XyetherKiller_InkingMaster/XyetherKiller_InkingMaster_v7_Final.pth", help="Student warm-start URL")
-    parser.add_argument("--pretrained_d_path", type=str, default="./weights/xyetherkiller_inking_step_6000.pth", help="Base discriminator checkpoint")
-    parser.add_argument("--pretrained_d_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase13_XyetherKiller_InkingMaster/xyetherkiller_inking_step_6000.pth", help="Discriminator warm-start URL")
+    parser.add_argument("--pretrained_path", type=str, default="./weights/XyetherKiller_VectorClean_v8_Final.pth", help="Base student checkpoint")
+    parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase14_XyetherKiller_VectorClean/XyetherKiller_VectorClean_v8_Final.pth", help="Student warm-start URL")
+    parser.add_argument("--pretrained_d_path", type=str, default="./weights/xyetherkiller_vectorclean_step_6000.pth", help="Base discriminator checkpoint")
+    parser.add_argument("--pretrained_d_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase14_XyetherKiller_VectorClean/xyetherkiller_vectorclean_step_6000.pth", help="Discriminator warm-start URL")
     parser.add_argument("--teacher_strong_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Official_Xyether_References/Xyether_Strong_v3_Official.pth", help="Strong v3 teacher url")
     parser.add_argument("--teacher_bal_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Official_Xyether_References/Xyether_Balanced_2x_Official.pth", help="Balanced 2x teacher url")
     parser.add_argument("--output_dir", type=str, default="./output_models", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=12, help="Batch size")
     parser.add_argument("--patch_size", type=int, default=192, help="HR Patch size")
     parser.add_argument("--total_iters", type=int, default=6000, help="Total iterations")
-    parser.add_argument("--lr_g", type=float, default=1.0e-5, help="Generator polishing learning rate")
-    parser.add_argument("--lr_d", type=float, default=8.0e-6, help="Discriminator polishing learning rate")
+    parser.add_argument("--lr_g", type=float, default=8.0e-6, help="Generator polishing learning rate")
+    parser.add_argument("--lr_d", type=float, default=6.0e-6, help="Discriminator polishing learning rate")
     parser.add_argument("--pixel_weight", type=float, default=0.08, help="Pixel anchor Charbonnier weight")
     parser.add_argument("--percep_weight", type=float, default=0.20, help="Multi-layer VGG19 perceptual loss weight")
-    parser.add_argument("--grad_weight", type=float, default=0.35, help="Teacher masked adjacent gradient weight")
-    parser.add_argument("--ink_weight", type=float, default=0.30, help="Teacher direct inking darkness weight")
-    parser.add_argument("--lap_weight", type=float, default=0.25, help="Teacher Laplacian curvature smoothing weight")
-    parser.add_argument("--shade_weight", type=float, default=0.25, help="Teacher clean flat shading weight")
-    parser.add_argument("--luv_weight", type=float, default=0.10, help="Teacher ColorLuv cel shading weight")
-    parser.add_argument("--gan_weight", type=float, default=0.10, help="Active UNet Discriminator GAN weight")
+    parser.add_argument("--grad_weight", type=float, default=0.30, help="Teacher masked adjacent gradient weight")
+    parser.add_argument("--ink_weight", type=float, default=0.08, help="Teacher stroke width profile match weight")
+    parser.add_argument("--lap_weight", type=float, default=0.20, help="Teacher Laplacian curvature smoothing weight")
+    parser.add_argument("--shade_weight", type=float, default=0.35, help="Teacher clean flat shading weight")
+    parser.add_argument("--luv_weight", type=float, default=0.15, help="Teacher ColorLuv cel shading weight")
+    parser.add_argument("--gan_weight", type=float, default=0.08, help="Active UNet Discriminator GAN weight")
     parser.add_argument("--ema_decay", type=float, default=0.9995, help="EMA decay")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use FP16 AMP")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")

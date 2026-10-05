@@ -253,13 +253,13 @@ class AdjacentGradientLoss(nn.Module):
 
 class MaskedInkingLoss(nn.Module):
     """
-    Masked High-Frequency Inking & Line Art Darkness Loss.
-    1. Focuses 1-pixel adjacent gradient loss ONLY on line art edges (prevents background dilution).
-    2. Penalizes whenever student's lines are lighter/faded/grey compared to Strong v3:
-       L_ink = (ReLU(pred - target) * M).sum() / (M.sum() + eps)
-    Forces needle-sharp edges (Edge Slope >= 900) and pitch-black ink (min_ink = 0).
+    Refined Masked Inking & Stroke Width Matching Loss (Phase 15).
+    1. Concentrates 1-pixel adjacent gradient loss ONLY on line art contours.
+    2. Symmetric stroke profile matching: penalizes deviation from Strong v3's stroke width,
+       eliminating stroke bloating/thickening while preserving crisp needle-thin lines.
+    3. Core inking darkness anchor: strictly enforces pitch-black ink (min_ink = 0) at the line center.
     """
-    def __init__(self, grad_weight=0.35, ink_weight=0.25, threshold=0.10, eps=1e-6):
+    def __init__(self, grad_weight=0.30, ink_weight=0.08, threshold=0.08, eps=1e-6):
         super().__init__()
         self.grad_weight = grad_weight
         self.ink_weight = ink_weight
@@ -287,15 +287,21 @@ class MaskedInkingLoss(nn.Module):
         loss_gy = (diff_y * mask_y).sum() / (mask_y.sum() + self.eps)
         loss_grad = (loss_gx + loss_gy) * 0.5
 
-        # 4. Inking Darkness Penalty (Student must NOT be lighter than Strong v3 on line art)
+        # 4. Stroke Profile & Width Matching (Symmetric penalty: prevents bloated lines)
         edge_mask = torch.zeros_like(pred)
         edge_mask[:, :, :, 1:] = torch.maximum(edge_mask[:, :, :, 1:], mask_x)
         edge_mask[:, :, 1:, :] = torch.maximum(edge_mask[:, :, 1:, :], mask_y)
 
-        l_ink = F.relu(pred - target)
-        loss_ink = (l_ink * edge_mask).sum() / (edge_mask.sum() + self.eps)
+        # Profile match: student stroke width must match teacher stroke width exactly
+        diff_ink = torch.sqrt((pred - target) ** 2 + self.eps ** 2)
+        loss_profile = (diff_ink * edge_mask).sum() / (edge_mask.sum() + self.eps)
 
-        return self.grad_weight * loss_grad + self.ink_weight * loss_ink
+        # Core darkness anchor: ensure center of lines reaches pitch black without bloating borders
+        core_mask = (target.mean(dim=1, keepdim=True) < 0.15).float() * edge_mask
+        l_core = F.relu(pred - target)
+        loss_core = (l_core * core_mask).sum() / (core_mask.sum() + self.eps)
+
+        return self.grad_weight * loss_grad + self.ink_weight * (loss_profile + 0.5 * loss_core)
 
 
 class LaplacianLoss(nn.Module):
