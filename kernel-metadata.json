@@ -1,7 +1,7 @@
 {
   "id": "thanawnit/xyether-training-runner",
   "title": "Xyether Training Runner",
-  "code_file": "Kaggle_Xyether_Training.ipynb",
+  "code_file": "Kaggle_Xyether_Eval.ipynb",
   "language": "python",
   "kernel_type": "notebook",
   "is_private": "true",
