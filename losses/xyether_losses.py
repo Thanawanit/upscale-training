@@ -292,6 +292,216 @@ class BilateralInkTroughTarget(nn.Module):
         return build_true_ink_trough_target(hr_tensor, self.valley_strength, self.aa_preserve)
 
 
+def build_phase19_shock_target(
+    hr_tensor: torch.Tensor,
+    valley_strength: float = 2.85,
+    shoulder_restore: float = 0.65,
+    step_shock: float = 0.48
+):
+    """
+    Phase 19 Orthogonal-Minimum 1px Core + Monotonic Same-Side Shoulder Restoration + Step-Edge Shock Target:
+    1. Orthogonal-Minimum 1px Valley Detection (H and V axes with cubic soft-NMS):
+       Every 1px curve (0..90 deg) is a local minimum along H or V. Avoiding 2-step diagonal minima
+       eliminates 2px staircase bricks on diagonal lines while darkening 1px hairlines to deep ink.
+    2. Monotonic Same-Side Shoulder Restoration:
+       Restores blurred 1px shoulders upward toward their own side's plateau without crossing lines.
+    3. Zero-Halo Local Envelope Clamp [hr_min3 * (1 - w_core), hr_max3]:
+       Guarantees 0.0000 bright halo overshoot beyond the clean 3x3 local maximum.
+    """
+    with torch.no_grad():
+        x = hr_tensor
+        r, g, b = x[:, 0:1], x[:, 1:2], x[:, 2:3]
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        vmax = torch.maximum(torch.maximum(r, g), b)
+        illum = 0.5 * luma + 0.5 * vmax
+
+        ip1 = F.pad(illum, (1, 1, 1, 1), mode='replicate')
+        ip2 = F.pad(illum, (2, 2, 2, 2), mode='replicate')
+        hp1 = F.pad(x, (1, 1, 1, 1), mode='replicate')
+
+        l1, r1 = ip1[:, :, 1:-1, :-2], ip1[:, :, 1:-1, 2:]
+        l2, r2 = ip2[:, :, 2:-2, :-4], ip2[:, :, 2:-2, 4:]
+        u1, d1 = ip1[:, :, :-2, 1:-1], ip1[:, :, 2:, 1:-1]
+        u2, d2 = ip2[:, :, :-4, 2:-2], ip2[:, :, 4:, 2:-2]
+
+        w_min_h = ((torch.minimum(l1, r1) - illum + 0.002) / 0.006).clamp(0.0, 1.0)
+        depth_h = (torch.minimum(torch.maximum(l1, l2), torch.maximum(r1, r2)) - illum).clamp(min=0.0) * w_min_h
+
+        w_min_v = ((torch.minimum(u1, d1) - illum + 0.002) / 0.006).clamp(0.0, 1.0)
+        depth_v = (torch.minimum(torch.maximum(u1, u2), torch.maximum(d1, d2)) - illum).clamp(min=0.0) * w_min_v
+
+        raw_valley = (torch.maximum(depth_h, depth_v) - 0.010).clamp(min=0.0)
+
+        rv_pad = F.pad(raw_valley, (1, 1, 1, 1), mode='replicate')
+        max_nh = torch.maximum(rv_pad[:, :, 1:-1, :-2], rv_pad[:, :, 1:-1, 2:])
+        max_nv = torch.maximum(rv_pad[:, :, :-2, 1:-1], rv_pad[:, :, 2:, 1:-1])
+        w_horiz = ((depth_h - depth_v + 0.005) / 0.010).clamp(0.0, 1.0)
+        max_nb = w_horiz * max_nh + (1.0 - w_horiz) * max_nv
+
+        nms = (raw_valley / (0.95 * max_nb + 1e-5)).clamp(0.0, 1.0) ** 3
+        core_valley = raw_valley * nms
+        w_core = (nms * (core_valley / 0.028).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+
+        darken_factor = torch.clamp(1.0 - valley_strength * core_valley, min=0.10, max=1.0)
+        dark_ink_toe = ((0.22 - luma) / 0.22).clamp(0.0, 1.0) * w_core
+        out = x * darken_factor - 0.065 * dark_ink_toe
+
+        wc_pad = F.pad(w_core, (1, 1, 1, 1), mode='replicate')
+        h_l1, h_r1 = hp1[:, :, 1:-1, :-2], hp1[:, :, 1:-1, 2:]
+        h_u1, h_d1 = hp1[:, :, :-2, 1:-1], hp1[:, :, 2:, 1:-1]
+
+        sh_l = wc_pad[:, :, 1:-1, 2:] * ((l1 - illum) / 0.025).clamp(0.0, 1.0) * (1.0 - w_core) * ((illum - r1) / 0.015).clamp(0.0, 1.0)
+        sh_r = wc_pad[:, :, 1:-1, :-2] * ((r1 - illum) / 0.025).clamp(0.0, 1.0) * (1.0 - w_core) * ((illum - l1) / 0.015).clamp(0.0, 1.0)
+        sh_u = wc_pad[:, :, 2:, 1:-1] * ((u1 - illum) / 0.025).clamp(0.0, 1.0) * (1.0 - w_core) * ((illum - d1) / 0.015).clamp(0.0, 1.0)
+        sh_d = wc_pad[:, :, :-2, 1:-1] * ((d1 - illum) / 0.025).clamp(0.0, 1.0) * (1.0 - w_core) * ((illum - u1) / 0.015).clamp(0.0, 1.0)
+
+        sh_delta = torch.maximum(
+            sh_l * (h_l1 - x).clamp(min=0.0) + sh_r * (h_r1 - x).clamp(min=0.0),
+            sh_u * (h_u1 - x).clamp(min=0.0) + sh_d * (h_d1 - x).clamp(min=0.0)
+        )
+        out = out + shoulder_restore * sh_delta
+
+        w_sh = (sh_l + sh_r + sh_u + sh_d).clamp(0.0, 1.0)
+        hr_max3 = F.max_pool2d(hp1, 3, 1)
+        hr_min3 = -F.max_pool2d(-hp1, 3, 1)
+        hr_mean3 = F.avg_pool2d(hp1, 3, 1)
+
+        edge_act = (((hr_max3 - hr_min3).mean(dim=1, keepdim=True) - 0.025) / 0.050).clamp(0.0, 1.0) * (1.0 - w_core) * (1.0 - w_sh)
+        out = out + step_shock * edge_act * (x - hr_mean3)
+
+        lower_bound = hr_min3 * (1.0 - w_core)
+        out = torch.minimum(torch.maximum(out, lower_bound), hr_max3)
+        return out.clamp(0.0, 1.0), core_valley
+
+
+class Phase19ShockTarget(nn.Module):
+    """
+    Self-contained mathematical target generator for Phase 19 (XyetherKiller ShockMaster).
+    """
+    def __init__(self, valley_strength: float = 2.85, shoulder_restore: float = 0.65, step_shock: float = 0.48):
+        super().__init__()
+        self.valley_strength = valley_strength
+        self.shoulder_restore = shoulder_restore
+        self.step_shock = step_shock
+
+    @torch.no_grad()
+    def forward(self, hr_tensor: torch.Tensor):
+        return build_phase19_shock_target(
+            hr_tensor,
+            valley_strength=self.valley_strength,
+            shoulder_restore=self.shoulder_restore,
+            step_shock=self.step_shock
+        )
+
+
+class Phase19ShockMasterLoss(nn.Module):
+    """
+    Phase 19 ShockMaster Region-Balanced & Symmetric-Envelope Loss:
+    1. 3x3 Region-Balanced Weighting (0.45 * w_point + 0.55 * w_max3):
+       Eliminates the 10x center-vs-shoulder weight asymmetry so 1px lines never smear into 3px dark bands.
+    2. 2x2 Wavelet Subpixel Split Loss:
+       Compares clean subpixel wavelet detail (target - Nearest(AvgPool2x2(target))) against
+       predicted subpixel wavelet detail so JPEG noise in LR never pollutes active masks.
+    3. Quiet-Zone Gradient Regularization (w_tot = w_active_norm + 0.90 * w_quiet):
+       Actively wipes out JPEG mosquito ripples in flat cel-shaded regions adjacent to lines.
+    4. Symmetric Core/Shoulder Envelope Loss:
+       Uses [target - 0.006, t_max3 + 0.006] on shoulders and [t_min3 - 0.006, target + 0.006] on 1px cores,
+       preventing t_min3 from pulling bright shoulders down into dark lines while clamping halo overshoot.
+    """
+    def __init__(self, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        lap8 = torch.tensor(
+            [[1., 1., 1.],
+             [1., -8., 1.],
+             [1., 1., 1.]], dtype=torch.float32
+        ).view(1, 1, 3, 3).repeat(3, 1, 1, 1) / 8.0
+        self.register_buffer('lap8_kernel', lap8)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor, lr_input: torch.Tensor, core_valley: torch.Tensor):
+        eps = self.eps
+        with torch.no_grad():
+            base_tar = F.interpolate(F.avg_pool2d(target, kernel_size=2, stride=2), scale_factor=2, mode='nearest')
+            r_tar = target - base_tar
+            r_mag = r_tar.abs().mean(dim=1, keepdim=True)
+
+            t_pad = F.pad(target, (1, 1, 1, 1), mode='replicate')
+            t_max3 = F.max_pool2d(t_pad, kernel_size=3, stride=1)
+            t_min3 = -F.max_pool2d(-t_pad, kernel_size=3, stride=1)
+            edge_span = (t_max3 - t_min3).mean(dim=1, keepdim=True)
+
+            is_core = (core_valley > 0.010).float()
+            is_edge = (edge_span > 0.025).float()
+            is_active = ((r_mag > 0.008) | (is_core > 0.5) | (is_edge > 0.5)).float()
+            is_active_region = F.max_pool2d(F.pad(is_active, (1, 1, 1, 1), mode='replicate'), kernel_size=3, stride=1)
+            is_quiet = 1.0 - is_active_region
+
+            edge_halo_zone = F.max_pool2d(F.pad(is_edge, (2, 2, 2, 2), mode='replicate'), kernel_size=5, stride=1)
+
+            w_point = is_active * (1.0 + 22.0 * r_mag + 14.0 * is_core)
+            w_max3 = F.max_pool2d(F.pad(w_point, (1, 1, 1, 1), mode='replicate'), kernel_size=3, stride=1)
+            w_active = is_active_region * (0.45 * w_point + 0.55 * w_max3)
+            w_active_norm = w_active / (w_active.mean() + 1e-6)
+
+        err_charb = torch.sqrt((pred - target) ** 2 + eps ** 2)
+
+        base_pred = F.interpolate(F.avg_pool2d(pred, kernel_size=2, stride=2), scale_factor=2, mode='nearest')
+        r_pred = pred - base_pred
+        under_split = F.relu(r_tar.abs() - r_pred * torch.sign(r_tar)) * (r_mag > 0.010).float()
+        l_active = ((err_charb + 0.90 * under_split) * w_active_norm).mean()
+
+        w_quiet = is_quiet * (1.0 + 2.8 * edge_halo_zone)
+        l_quiet = (err_charb * w_quiet).sum() / (w_quiet.sum() * 3.0 + 1.0)
+
+        dx_p = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+        dx_t = target[:, :, :, 1:] - target[:, :, :, :-1]
+        dy_p = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        dy_t = target[:, :, 1:, :] - target[:, :, :-1, :]
+
+        w_tot = w_active_norm + 0.90 * w_quiet
+        wx = torch.maximum(w_tot[:, :, :, 1:], w_tot[:, :, :, :-1])
+        wy = torch.maximum(w_tot[:, :, 1:, :], w_tot[:, :, :-1, :])
+        act_x = torch.maximum(is_active_region[:, :, :, 1:], is_active_region[:, :, :, :-1])
+        act_y = torch.maximum(is_active_region[:, :, 1:, :], is_active_region[:, :, :-1, :])
+        under_gx = F.relu(dx_t.abs() - dx_p * torch.sign(dx_t)) * (dx_t.abs() > 0.020).float() * act_x
+        under_gy = F.relu(dy_t.abs() - dy_p * torch.sign(dy_t)) * (dy_t.abs() > 0.020).float() * act_y
+
+        l_grad_xy = 0.5 * (
+            ((torch.sqrt((dx_p - dx_t) ** 2 + eps ** 2) + 0.85 * under_gx) * wx).mean() +
+            ((torch.sqrt((dy_p - dy_t) ** 2 + eps ** 2) + 0.85 * under_gy) * wy).mean()
+        )
+
+        dd1_p = pred[:, :, 1:, 1:] - pred[:, :, :-1, :-1]
+        dd1_t = target[:, :, 1:, 1:] - target[:, :, :-1, :-1]
+        dd2_p = pred[:, :, 1:, :-1] - pred[:, :, :-1, 1:]
+        dd2_t = target[:, :, 1:, :-1] - target[:, :, :-1, 1:]
+        wd1 = torch.maximum(w_tot[:, :, 1:, 1:], w_tot[:, :, :-1, :-1])
+        wd2 = torch.maximum(w_tot[:, :, 1:, :-1], w_tot[:, :, :-1, 1:])
+        l_grad_diag = 0.5 * (
+            (torch.sqrt((dd1_p - dd1_t) ** 2 + eps ** 2) * wd1).mean() +
+            (torch.sqrt((dd2_p - dd2_t) ** 2 + eps ** 2) * wd2).mean()
+        )
+
+        lap8 = self.lap8_kernel.to(pred.device, dtype=pred.dtype)
+        lap_p = F.conv2d(F.pad(pred, (1, 1, 1, 1), mode='replicate'), lap8, groups=3)
+        lap_t = F.conv2d(F.pad(target, (1, 1, 1, 1), mode='replicate'), lap8, groups=3)
+        l_lap = (torch.sqrt((lap_p - lap_t) ** 2 + eps ** 2) * (0.6 * w_active_norm + 0.5 * is_quiet)).mean()
+
+        upper_env = is_core * (target + 0.006) + (1.0 - is_core) * (t_max3 + 0.006)
+        lower_env = is_core * (t_min3 - 0.006) + (1.0 - is_core) * (target - 0.006)
+        over_env = F.relu(pred - upper_env)
+        under_env = F.relu(lower_env - pred)
+        l_halo = ((1.8 * over_env + 1.8 * under_env) * (1.0 + 3.0 * edge_halo_zone)).mean()
+
+        total = 1.5 * l_active + 1.00 * l_quiet + 1.5 * l_grad_xy + 1.0 * l_grad_diag + 1.8 * l_lap + 2.5 * l_halo
+        return total, {
+            'l_active': l_active.item(),
+            'l_quiet': l_quiet.item(),
+            'l_grad': (l_grad_xy + l_grad_diag).item(),
+            'l_halo': l_halo.item()
+        }
+
+
 class Phase18CoreEngineLoss(nn.Module):
     """
     Phase 18 Zero-Halo 1px Core Engine Loss:

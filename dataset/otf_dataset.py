@@ -88,16 +88,16 @@ class AnimeOTFDataset(Dataset):
         return best_patch
 
     def _apply_gaussian_blur(self, img_np: np.ndarray) -> np.ndarray:
-        sigma = random.uniform(0.20, 0.65)
-        return cv2.GaussianBlur(img_np, (3, 3), sigmaX=sigma, sigmaY=sigma)
+        sigma = random.uniform(0.35, 1.00)
+        return cv2.GaussianBlur(img_np, (0, 0), sigmaX=sigma, sigmaY=sigma)
 
     def _apply_jpeg_compression(self, img_np: np.ndarray) -> np.ndarray:
-        quality = random.randint(80, 96)
+        quality = random.randint(74, 95)
         _, enc = cv2.imencode('.jpg', img_np, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         return cv2.imdecode(enc, cv2.IMREAD_COLOR)
 
     def _apply_noise(self, img_float: np.ndarray) -> np.ndarray:
-        sigma = random.uniform(0.5, 3.0) / 255.0
+        sigma = random.uniform(0.4, 2.2) / 255.0
         noise = np.random.normal(0, sigma, img_float.shape).astype(np.float32)
         return np.clip(img_float + noise, 0.0, 1.0)
 
@@ -129,11 +129,11 @@ class AnimeOTFDataset(Dataset):
             hr_patch = np.rot90(hr_patch, rot_k)
         hr_patch = np.ascontiguousarray(hr_patch)
 
-        # 3. Phase-Aligned Realistic Anime Degradation on LR
+        # 3. Phase 19 Realistic Anime Deblur + Denoise OTF Degradation on LR
         lr_patch = hr_patch.copy()
 
-        # A. Mild Optical Blur (35% chance)
-        if random.random() < 0.35:
+        # A. Continuous Optical Pre-Downsample Blur (75% chance, sigma 0.35..1.00 with full kernel support)
+        if random.random() < 0.75:
             lr_patch = self._apply_gaussian_blur(lr_patch)
 
         # B. Subpixel-aligned 2x Downsample (No INTER_NEAREST phase jitter!)
@@ -145,19 +145,17 @@ class AnimeOTFDataset(Dataset):
         lr_w = self.patch_size // 2
         lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
 
+        # C. Realistic JPEG Compression (60% chance, quality 74..95) so model learns mosquito-noise removal
+        if random.random() < 0.60:
+            lr_patch = self._apply_jpeg_compression(lr_patch)
+
         # Convert to RGB float [0, 1]
         hr_rgb = cv2.cvtColor(hr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         lr_rgb = cv2.cvtColor(lr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
-        # C. Subtle Sensor/Web Noise (10% chance)
-        if random.random() < 0.10:
+        # D. Subtle Sensor/Web Noise (12% chance)
+        if random.random() < 0.12:
             lr_rgb = self._apply_noise(lr_rgb)
-
-        # D. Mild JPEG Compression (15% chance)
-        if random.random() < 0.15:
-            lr_bgr_uint8 = cv2.cvtColor((lr_rgb * 255.0).clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
-            lr_bgr_jpeg = self._apply_jpeg_compression(lr_bgr_uint8)
-            lr_rgb = cv2.cvtColor(lr_bgr_jpeg, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
         hr_tensor = torch.from_numpy(hr_rgb.transpose(2, 0, 1).copy())
         lr_tensor = torch.from_numpy(lr_rgb.transpose(2, 0, 1).copy())
