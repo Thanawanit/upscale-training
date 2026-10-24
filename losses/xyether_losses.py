@@ -698,3 +698,258 @@ class LaplacianLoss(nn.Module):
 class DirectionalGradientLoss(AdjacentGradientLoss):
     """Backward compatibility alias for AdjacentGradientLoss."""
     pass
+
+
+class LumaGuidedAPISRTeacher(nn.Module):
+    """
+    Phase 20 Luma-Guided Zero-Halo APISR+GT Teacher Target Generator (Option B).
+    - Runs APISR.onnx on Clean_LR = F.avg_pool2d(hr_gt, 2, 2) (via CUDAExecutionProvider if available,
+      or PyTorch converted module / CPUExecutionProvider fallback) to get 4x anti-aliased subpixel curves.
+    - Area-downsamples the 4x APISR output to 2x (matching hr_gt resolution) via F.avg_pool2d(..., 2, 2).
+    - Extracts APISR's luminance (ap_luma), clamps its upper bound to GT's 3x3 local maximum (gt_luma_max3)
+      to guarantee zero bright halo overshoot, blends it on edges (w_edge), and applies the luminance
+      ratio/delta directly to GT's exact RGB chrominance so flat cel-shaded colors stay 100% faithful.
+    """
+    def __init__(self, onnx_path: str = None):
+        super().__init__()
+        self.onnx_path = onnx_path
+        self.torch_teacher = None
+        self.ort_sess = None
+        self.input_name = "pixel_values"
+        self.fallback_builder = Phase19ShockTarget()
+        self._initialized = False
+
+    def _lazy_init_session(self, device):
+        if self._initialized:
+            return
+        self._initialized = True
+        if self.onnx_path is None:
+            return
+        import os
+        if not os.path.exists(self.onnx_path):
+            return
+
+        # Try converting APISR.onnx to a native PyTorch GPU module first via onnx2torch (fastest on CUDA!)
+        if device.type == 'cuda':
+            try:
+                import onnx
+                from onnx2torch import convert
+                onnx_model = onnx.load(self.onnx_path)
+                t_mod = convert(onnx_model).eval().to(device)
+                for p in t_mod.parameters():
+                    p.requires_grad = False
+                # Verify with a dummy forward pass
+                dummy = torch.zeros(1, 3, 16, 16, device=device, dtype=torch.float32)
+                _ = t_mod(dummy)
+                self.torch_teacher = t_mod
+                print(f"[APISR TEACHER] Converted APISR.onnx to native PyTorch CUDA module on {device}!", flush=True)
+                return
+            except Exception as e:
+                print(f"[APISR TEACHER] onnx2torch fallback to onnxruntime ({e})", flush=True)
+
+        try:
+            import onnxruntime as ort
+            avail = ort.get_available_providers()
+            providers = []
+            if device.type == 'cuda' and 'CUDAExecutionProvider' in avail:
+                providers.append('CUDAExecutionProvider')
+            providers.append('CPUExecutionProvider')
+            sess_opts = ort.SessionOptions()
+            sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.ort_sess = ort.InferenceSession(self.onnx_path, sess_options=sess_opts, providers=providers)
+            self.input_name = self.ort_sess.get_inputs()[0].name
+            print(f"[APISR TEACHER] Loaded APISR.onnx with providers: {self.ort_sess.get_providers()}", flush=True)
+        except Exception as e:
+            print(f"[WARN] Could not load APISR.onnx via onnxruntime ({e}); using analytical fallback.", flush=True)
+            self.ort_sess = None
+
+    @torch.no_grad()
+    def forward(self, hr_tensor: torch.Tensor):
+        device = hr_tensor.device
+        self._lazy_init_session(device)
+        if self.torch_teacher is None and self.ort_sess is None:
+            return self.fallback_builder(hr_tensor)
+
+        dtype = hr_tensor.dtype
+        gt_t = hr_tensor.float()
+
+        # 1. Clean 2x Area Downsample (mathematically identical to cv2.INTER_AREA for 2x)
+        lr_clean = F.avg_pool2d(gt_t, kernel_size=2, stride=2)
+
+        # 2. Run APISR 4x inference and area-downsample 4x -> 2x (matching hr_tensor HxW)
+        if self.torch_teacher is not None:
+            with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
+                ap_4x = self.torch_teacher(lr_clean).float().clamp(0.0, 1.0)
+        else:
+            lr_np = lr_clean.detach().cpu().numpy().astype('float32')
+            out_4x_np = self.ort_sess.run(None, {self.input_name: lr_np})[0]
+            ap_4x = torch.from_numpy(out_4x_np).to(device=device, dtype=torch.float32).clamp(0.0, 1.0)
+        ap_t = F.avg_pool2d(ap_4x, kernel_size=2, stride=2)
+
+        # 3. Luma-Guided Zero-Halo APISR + GT Fusion
+        gt_luma = 0.299 * gt_t[:, 0:1] + 0.587 * gt_t[:, 1:2] + 0.114 * gt_t[:, 2:3]
+        ap_luma = 0.299 * ap_t[:, 0:1] + 0.587 * ap_t[:, 1:2] + 0.114 * ap_t[:, 2:3]
+
+        gt_pad = F.pad(gt_luma, (1, 1, 1, 1), mode='replicate')
+        gt_luma_max3 = F.max_pool2d(gt_pad, kernel_size=3, stride=1)
+        gt_luma_min3 = -F.max_pool2d(-gt_pad, kernel_size=3, stride=1)
+        ap_luma_clamped = torch.minimum(ap_luma, gt_luma_max3)
+
+        span = gt_luma_max3 - gt_luma_min3
+        w_edge = ((span - 0.015) / 0.035).clamp(0.0, 1.0)
+        w_edge = F.max_pool2d(F.pad(w_edge, (1, 1, 1, 1), mode='replicate'), kernel_size=3, stride=1)
+
+        target_luma = w_edge * ap_luma_clamped + (1.0 - w_edge) * gt_luma
+        delta_y = target_luma - gt_luma
+
+        gt_max3_rgb = F.max_pool2d(F.pad(gt_t, (1, 1, 1, 1), mode='replicate'), kernel_size=3, stride=1)
+        ratio = (target_luma / (gt_luma + 1e-4)).clamp(0.0, 1.5)
+        out_dark = gt_t * ratio
+        out_bright = torch.minimum(gt_t + delta_y.clamp(min=0.0), gt_max3_rgb)
+        hybrid_target = torch.where(delta_y < 0.0, out_dark, out_bright).clamp(0.0, 1.0)
+
+        core_valley = (gt_luma - target_luma).clamp(min=0.0)
+        return hybrid_target.to(dtype=dtype), core_valley.to(dtype=dtype)
+
+
+class Phase20APISRDistillLoss(nn.Module):
+    """
+    Phase 20 APISR-Guided Subpixel & De-JPEG Distillation Loss:
+    1. Exact Pixel + Bidirectional 2x2 Subpixel Split Loss:
+       Directly supervises the 2x2 high-frequency wavelet split (pred - Nearest(AvgPool2x2(pred)))
+       with bidirectional under-split penalties so the PixelShuffle(2) head never locks 2x2 blocks
+       ("downscale look") even on blurry/JPEG inputs.
+    2. Multi-Scale (1x + 2x) Quiet De-JPEG & 4:2:0 Chroma-Bleed Restoration Loss:
+       Eliminates 4:2:0 JPEG chroma subsampling step bands inside high-saturation regions (e.g. red ribbons)
+       adjacent to dark lines via upward chroma-bleed recovery (under_chroma) and 2x2 pooled color consistency.
+    3. Multi-Step (1px, 2px, 4px) Gradient & Diagonal Continuity Loss:
+       Simultaneously enforces crisp 1px edges, smooth 45/135-degree anti-aliased curves, and flat 2px/4px
+       JPEG chroma block transitions.
+    4. True 2x2 Flat-Only Checkerboard Penalty:
+       Replaces global Laplacian loss (which caused 2x2 block-locking on blurry edges) with a direct 2x2
+       subpixel variance penalty strictly restricted to verified flat regions (is_quiet).
+    5. Zero-Halo Symmetric Target-Anchored Envelope Clamp:
+       Strictly prevents bright halo overshoot (pred > t_max3 + 0.002) and shoulder darkening bloat.
+    """
+    def __init__(self, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor, lr_input: torch.Tensor = None, core_valley: torch.Tensor = None):
+        eps = self.eps
+        with torch.no_grad():
+            t_pad = F.pad(target, (1, 1, 1, 1), mode='replicate')
+            t_max3 = F.max_pool2d(t_pad, kernel_size=3, stride=1)
+            t_min3 = -F.max_pool2d(-t_pad, kernel_size=3, stride=1)
+            edge_span = (t_max3 - t_min3).max(dim=1, keepdim=True)[0]
+
+            base_t = F.interpolate(F.avg_pool2d(target, kernel_size=2, stride=2), scale_factor=2, mode='nearest')
+            r_tar = target - base_t
+            r_mag = r_tar.abs().max(dim=1, keepdim=True)[0]
+
+            is_active = ((edge_span > 0.025) | (r_mag > 0.009)).float()
+            is_active_region = F.max_pool2d(F.pad(is_active, (1, 1, 1, 1), mode='replicate'), kernel_size=3, stride=1)
+            is_quiet = 1.0 - is_active_region
+
+            w_raw = is_active_region * (1.0 + 18.0 * edge_span + 28.0 * r_mag)
+            w_smooth = F.avg_pool2d(F.pad(w_raw, (1, 1, 1, 1), mode='replicate'), kernel_size=3, stride=1)
+            w_norm = w_smooth / (w_smooth.mean() + 1e-6)
+
+            halo_zone = F.max_pool2d(F.pad((edge_span > 0.030).float(), (4, 4, 4, 4), mode='replicate'), kernel_size=9, stride=1)
+
+        # 1. Exact Pixel + Bidirectional 2x2 Subpixel Split Loss
+        err_pix = torch.sqrt((pred - target) ** 2 + eps ** 2)
+        base_p = F.interpolate(F.avg_pool2d(pred, kernel_size=2, stride=2), scale_factor=2, mode='nearest')
+        r_pred = pred - base_p
+        err_sub = torch.sqrt((r_pred - r_tar) ** 2 + eps ** 2)
+        under_pos = F.relu(r_tar - r_pred) * (r_tar > 0.005).float()
+        under_neg = F.relu(r_pred - r_tar) * (r_tar < -0.005).float()
+        l_active = ((err_pix + 1.8 * err_sub + 1.35 * (under_pos + under_neg)) * w_norm).mean()
+
+        # 2. Multi-Scale Quiet De-JPEG & 4:2:0 Chroma-Subsampling Restoration Loss
+        w_quiet = is_quiet * (1.0 + 6.5 * halo_zone)
+        under_chroma = F.relu(target - pred) * is_quiet * halo_zone
+        l_quiet_1x = ((err_pix + 2.2 * under_chroma) * w_quiet).sum() / (w_quiet.sum() * 3.0 + 1.0)
+        p_2x = F.avg_pool2d(pred, kernel_size=2, stride=2)
+        t_2x = F.avg_pool2d(target, kernel_size=2, stride=2)
+        wq_2x = F.avg_pool2d(w_quiet, kernel_size=2, stride=2)
+        l_quiet_2x = (torch.sqrt((p_2x - t_2x) ** 2 + eps ** 2) * wq_2x).sum() / (wq_2x.sum() * 3.0 + 1.0)
+        l_quiet = l_quiet_1x + 1.5 * l_quiet_2x
+
+        # 3. Multi-Step (1px, 2px, 4px) Gradient & Diagonal Continuity Loss
+        dx1_p = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+        dx1_t = target[:, :, :, 1:] - target[:, :, :, :-1]
+        dy1_p = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        dy1_t = target[:, :, 1:, :] - target[:, :, :-1, :]
+        w_tot = w_norm + 1.60 * w_quiet
+        wx1 = torch.maximum(w_tot[:, :, :, 1:], w_tot[:, :, :, :-1])
+        wy1 = torch.maximum(w_tot[:, :, 1:, :], w_tot[:, :, :-1, :])
+        under_gx = F.relu(dx1_t.abs() - dx1_p * torch.sign(dx1_t)) * (dx1_t.abs() > 0.018).float()
+        under_gy = F.relu(dy1_t.abs() - dy1_p * torch.sign(dy1_t)) * (dy1_t.abs() > 0.018).float()
+        l_grad_1 = 0.5 * (
+            ((torch.sqrt((dx1_p - dx1_t) ** 2 + eps ** 2) + 0.90 * under_gx) * wx1).mean() +
+            ((torch.sqrt((dy1_p - dy1_t) ** 2 + eps ** 2) + 0.90 * under_gy) * wy1).mean()
+        )
+
+        dx2_p = pred[:, :, :, 2:] - pred[:, :, :, :-2]
+        dx2_t = target[:, :, :, 2:] - target[:, :, :, :-2]
+        dy2_p = pred[:, :, 2:, :] - pred[:, :, :-2, :]
+        dy2_t = target[:, :, 2:, :] - target[:, :, :-2, :]
+        wq2_x = torch.minimum(w_quiet[:, :, :, 2:], w_quiet[:, :, :, :-2])
+        wq2_y = torch.minimum(w_quiet[:, :, 2:, :], w_quiet[:, :, :-2, :])
+        l_grad_2 = 0.5 * (
+            (torch.sqrt((dx2_p - dx2_t) ** 2 + eps ** 2) * (0.5 + 3.0 * wq2_x)).mean() +
+            (torch.sqrt((dy2_p - dy2_t) ** 2 + eps ** 2) * (0.5 + 3.0 * wq2_y)).mean()
+        )
+
+        dx4_p = pred[:, :, :, 4:] - pred[:, :, :, :-4]
+        dx4_t = target[:, :, :, 4:] - target[:, :, :, :-4]
+        dy4_p = pred[:, :, 4:, :] - pred[:, :, :-4, :]
+        dy4_t = target[:, :, 4:, :] - target[:, :, :-4, :]
+        wq4_x = torch.minimum(w_quiet[:, :, :, 4:], w_quiet[:, :, :, :-4])
+        wq4_y = torch.minimum(w_quiet[:, :, 4:, :], w_quiet[:, :, :-4, :])
+        l_grad_4 = 0.5 * (
+            (torch.sqrt((dx4_p - dx4_t) ** 2 + eps ** 2) * (0.4 + 3.0 * wq4_x)).mean() +
+            (torch.sqrt((dy4_p - dy4_t) ** 2 + eps ** 2) * (0.4 + 3.0 * wq4_y)).mean()
+        )
+
+        dd1_p = pred[:, :, 1:, 1:] - pred[:, :, :-1, :-1]
+        dd1_t = target[:, :, 1:, 1:] - target[:, :, :-1, :-1]
+        dd2_p = pred[:, :, 1:, :-1] - pred[:, :, :-1, 1:]
+        dd2_t = target[:, :, 1:, :-1] - target[:, :, :-1, 1:]
+        wd1 = torch.maximum(w_tot[:, :, 1:, 1:], w_tot[:, :, :-1, :-1])
+        wd2 = torch.maximum(w_tot[:, :, 1:, :-1], w_tot[:, :, :-1, 1:])
+        l_grad_diag = 0.5 * (
+            (torch.sqrt((dd1_p - dd1_t) ** 2 + eps ** 2) * wd1).mean() +
+            (torch.sqrt((dd2_p - dd2_t) ** 2 + eps ** 2) * wd2).mean()
+        )
+
+        # 4. True 2x2 Flat-Only Checkerboard Penalty
+        f2x2 = F.avg_pool2d(is_quiet, kernel_size=2, stride=2)
+        c00 = pred[:, :, 0::2, 0::2]
+        c01 = pred[:, :, 0::2, 1::2]
+        c10 = pred[:, :, 1::2, 0::2]
+        c11 = pred[:, :, 1::2, 1::2]
+        chk_diff = (torch.abs(c00 - c01) + torch.abs(c00 - c10) + torch.abs(c11 - c01) + torch.abs(c11 - c10)) * 0.25
+        l_flat_chk = (chk_diff * f2x2).sum() / (f2x2.sum() * 3.0 + 1.0)
+
+        # 5. Strict Zero-Halo Symmetric Target-Anchored Envelope Clamp
+        over_env = F.relu(pred - (t_max3 + 0.002))
+        under_env = F.relu((target - 0.004) - pred) * (1.0 - (r_tar.min(dim=1, keepdim=True)[0] < -0.012).float())
+        l_halo = ((3.2 * over_env + 2.8 * under_env) * (1.0 + 4.5 * halo_zone)).mean()
+
+        total = (
+            1.6 * l_active
+            + 2.0 * l_quiet
+            + 1.5 * l_grad_1
+            + 1.4 * (l_grad_2 + l_grad_4)
+            + 1.2 * l_grad_diag
+            + 2.5 * l_flat_chk
+            + 3.0 * l_halo
+        )
+        return total, {
+            'l_active': l_active.item(),
+            'l_quiet': l_quiet.item(),
+            'l_grad': (l_grad_1 + l_grad_2 + l_grad_4 + l_grad_diag).item(),
+            'l_halo': l_halo.item()
+        }

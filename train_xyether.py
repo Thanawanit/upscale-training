@@ -19,6 +19,8 @@ from torch.utils.data import DataLoader
 
 from archs.xyether_compact import XyetherCompactNet
 from losses.xyether_losses import (
+    LumaGuidedAPISRTeacher,
+    Phase20APISRDistillLoss,
     Phase19ShockTarget,
     Phase19ShockMasterLoss,
     VGGPerceptualLoss,
@@ -56,14 +58,14 @@ def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     gpu_info = f"{num_gpus}x {torch.cuda.get_device_name(0)}" if num_gpus > 0 else "CPU"
-    print(f"[PHASE 19: XYETHERKILLER SHOCKMASTER (100% OWN CKPT)] Initializing on: {device} ({gpu_info})")
+    print(f"[PHASE 20: XYETHERKILLER APISR-GUIDED MASTER (100% OWN STUDENT CKPT)] Initializing on: {device} ({gpu_info})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_dir = out_dir / "visual_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Dataset Preparation (with 1080p-1440p Broadcast Scale Normalization & Edge-Rich Crops)
+    # 1. Dataset Preparation (with 1080p-1440p Broadcast Scale Normalization & Edge/Sat-Rich Crops)
     if not os.path.exists(args.data_dir) or len(
         list(Path(args.data_dir).rglob("*.png")) + list(Path(args.data_dir).rglob("*.jpg"))
     ) < 10:
@@ -111,13 +113,14 @@ def train_xyether(args):
     else:
         net_g = raw_net_g
 
-    # 3. Self-Contained Target Generator & Phase 19 ShockMaster Losses
-    target_builder = Phase19ShockTarget(
-        valley_strength=args.valley_strength,
-        shoulder_restore=args.shoulder_restore,
-        step_shock=args.step_shock
-    ).to(device)
-    crit_core = Phase19ShockMasterLoss().to(device)
+    # 3. Luma-Guided Zero-Halo APISR+GT Teacher Target Generator & Phase 20 Distillation Losses
+    teacher_onnx_path = Path(args.teacher_onnx_path)
+    if not teacher_onnx_path.exists() and getattr(args, 'teacher_onnx_url', None):
+        print(f"[TEACHER] Downloading APISR.onnx teacher from {args.teacher_onnx_url}...")
+        download_file_if_needed(args.teacher_onnx_url, teacher_onnx_path)
+
+    target_builder = LumaGuidedAPISRTeacher(onnx_path=str(teacher_onnx_path)).to(device)
+    crit_core = Phase20APISRDistillLoss().to(device)
     crit_vgg = VGGPerceptualLoss(loss_weight=args.percep_weight).to(device)
     crit_luv = ColorLuvLoss(loss_weight=args.luv_weight).to(device)
 
@@ -132,7 +135,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[PHASE 19] Starting XyetherKiller ShockMaster Training ({args.total_iters} iterations)...")
+    print(f"[PHASE 20] Starting XyetherKiller APISR-Guided Master Training ({args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -219,7 +222,7 @@ def train_xyether(args):
                 cv2.imwrite(str(sample_dir / f"step_{step:06d}.png"), cv2.cvtColor(grid_np, cv2.COLOR_RGB2BGR))
 
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyetherkiller_shockmaster_step_{step}.pth"
+            ckpt_path = out_dir / f"xyetherkiller_apisrmaster_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': raw_net_g.state_dict(),
@@ -235,16 +238,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase19_XyetherKiller_ShockMaster/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase20_XyetherKiller_APISRMaster/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up -> {hf_repo}/checkpoints/Phase19_XyetherKiller_ShockMaster/{ckpt_path.name}", flush=True)
+                    print(f"[HF] Backed up -> {hf_repo}/checkpoints/Phase20_XyetherKiller_APISRMaster/{ckpt_path.name}", flush=True)
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}", flush=True)
 
     # Export Final Production Model to PyTorch & ONNX
-    final_pth = out_dir / "XyetherKiller_ShockMaster_v19_Final.pth"
+    final_pth = out_dir / "XyetherKiller_APISRMaster_v20_Final.pth"
     torch.save({"params": ema_g.state_dict(), "params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}", flush=True)
 
@@ -256,7 +259,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase19_XyetherKiller_ShockMaster/XyetherKiller_ShockMaster_v19_Final.pth",
+                path_in_repo="checkpoints/Phase20_XyetherKiller_APISRMaster/XyetherKiller_APISRMaster_v20_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -265,7 +268,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}", flush=True)
 
     try:
-        final_onnx = out_dir / "XyetherKiller_ShockMaster_v19_Final.onnx"
+        final_onnx = out_dir / "XyetherKiller_APISRMaster_v20_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         with torch.no_grad():
             torch.onnx.export(
@@ -284,7 +287,7 @@ def train_xyether(args):
         if hf_token and hf_repo and hf_repo.lower() != 'none':
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase19_XyetherKiller_ShockMaster/XyetherKiller_ShockMaster_v19_Final.onnx",
+                path_in_repo="checkpoints/Phase20_XyetherKiller_APISRMaster/XyetherKiller_APISRMaster_v20_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -292,26 +295,28 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}", flush=True)
 
-    print("\n[COMPLETE] Phase 19 XyetherKiller ShockMaster training successfully finished!", flush=True)
+    print("\n[COMPLETE] Phase 20 XyetherKiller APISRMaster training successfully finished!", flush=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train XyetherKiller ShockMaster Series (Phase 19)")
+    parser = argparse.ArgumentParser(description="Train XyetherKiller APISRMaster Series (Phase 20)")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K", help="Dataset folder")
     parser.add_argument("--pretrained_path", type=str, default="./checkpoints/Phase19_XyetherKiller_ShockMaster/XyetherKiller_OwnSoup_Init_v19.pth", help="Authentic own-checkpoint base")
     parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase19_XyetherKiller_ShockMaster/XyetherKiller_OwnSoup_Init_v19.pth", help="Authentic own-checkpoint warm-start URL")
-    parser.add_argument("--output_dir", type=str, default="./output_models_phase19", help="Output directory")
+    parser.add_argument("--teacher_onnx_path", type=str, default="./reference_models/Model/APISR.onnx", help="APISR.onnx teacher path")
+    parser.add_argument("--teacher_onnx_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/teachers/APISR.onnx", help="APISR.onnx teacher download URL")
+    parser.add_argument("--output_dir", type=str, default="./output_models_phase20", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size across GPUs")
-    parser.add_argument("--patch_size", type=int, default=192, help="HR Patch size")
-    parser.add_argument("--total_iters", type=int, default=4000, help="Total iterations")
+    parser.add_argument("--patch_size", type=int, default=128, help="HR Patch size")
+    parser.add_argument("--total_iters", type=int, default=3500, help="Total iterations")
     parser.add_argument("--warmup_iters", type=int, default=150, help="Linear warmup iterations")
-    parser.add_argument("--lr_g", type=float, default=4.5e-5, help="Generator learning rate")
-    parser.add_argument("--valley_strength", type=float, default=2.85, help="Orthogonal-minimum 1px ink trough strength")
-    parser.add_argument("--shoulder_restore", type=float, default=0.65, help="Monotonic same-side shoulder restoration")
-    parser.add_argument("--step_shock", type=float, default=0.48, help="Step-edge shock filter strength")
-    parser.add_argument("--percep_weight", type=float, default=0.0, help="Shallow VGG19 (conv1_2, conv2_2) weight (0.0 = pure coordinate-exact)")
-    parser.add_argument("--luv_weight", type=float, default=0.08, help="ColorLuv cel-shading consistency weight")
-    parser.add_argument("--ema_decay", type=float, default=0.998, help="EMA decay")
+    parser.add_argument("--lr_g", type=float, default=5.5e-5, help="Generator learning rate")
+    parser.add_argument("--valley_strength", type=float, default=2.85, help="Fallback valley strength")
+    parser.add_argument("--shoulder_restore", type=float, default=0.65, help="Fallback shoulder restore")
+    parser.add_argument("--step_shock", type=float, default=0.48, help="Fallback step shock")
+    parser.add_argument("--percep_weight", type=float, default=0.0, help="Shallow VGG19 weight")
+    parser.add_argument("--luv_weight", type=float, default=0.05, help="ColorLuv cel-shading consistency weight")
+    parser.add_argument("--ema_decay", type=float, default=0.997, help="EMA decay")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use FP16 AMP")
     parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument("--log_every", type=int, default=100, help="Log interval")
