@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from archs.xyether_compact import XyetherCompactNet
 from losses.xyether_losses import (
     LumaGuidedAPISRTeacher,
+    Phase21TwinReflMasterLoss,
     Phase20APISRDistillLoss,
     Phase19ShockTarget,
     Phase19ShockMasterLoss,
@@ -58,14 +59,14 @@ def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     gpu_info = f"{num_gpus}x {torch.cuda.get_device_name(0)}" if num_gpus > 0 else "CPU"
-    print(f"[PHASE 20: XYETHERKILLER APISR-GUIDED MASTER (100% OWN STUDENT CKPT)] Initializing on: {device} ({gpu_info})")
+    print(f"[PHASE 21: XYETHERKILLER TWINREFL MASTER v2 (100% OWN STUDENT CKPT)] Initializing on: {device} ({gpu_info})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     sample_dir = out_dir / "visual_samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Dataset Preparation (with 1080p-1440p Broadcast Scale Normalization & Edge/Sat-Rich Crops)
+    # 1. Dataset Preparation (with 1080p-1440p Broadcast Scale Normalization, Edge/Sat-Rich Crops & Warm<->Cool Opponent Reflection)
     if not os.path.exists(args.data_dir) or len(
         list(Path(args.data_dir).rglob("*.png")) + list(Path(args.data_dir).rglob("*.jpg"))
     ) < 10:
@@ -101,11 +102,11 @@ def train_xyether(args):
     raw_net_g.load_state_dict(clean_sd_student, strict=True)
     print(f"[STUDENT] Warm-started authentic student model ({len(clean_sd_student)} tensors loaded).")
 
-    # Record initial Frobenius norms for Weight Norm Preservation (prevents 18-layer multiplicative shrinkage)
-    init_weight_norms = {}
-    for name, p in raw_net_g.named_parameters():
-        if 'weight' in name:
-            init_weight_norms[name] = p.data.norm().item()
+    # Record initial 36-channel Luma diagonal block (0:36, 0:36) so Chroma sub-trunks (36:64) & cross-blocks stay 100% free
+    init_luma_diag = {}
+    for l in range(1, 17):
+        w_t = getattr(raw_net_g.body[2 * l], 'weight').data
+        init_luma_diag[l] = w_t[0:36, 0:36].clone().to(device)
 
     if num_gpus > 1:
         print(f"[MULTI-GPU] Wrapping student generator in nn.DataParallel across {num_gpus} GPUs...")
@@ -113,19 +114,24 @@ def train_xyether(args):
     else:
         net_g = raw_net_g
 
-    # 3. Luma-Guided Zero-Halo APISR+GT Teacher Target Generator & Phase 20 Distillation Losses
+    # 3. Luma- & Chroma-Guided Zero-Halo APISR+GT Teacher Target Generator & Phase 21 TwinReflMaster Loss
     teacher_onnx_path = Path(args.teacher_onnx_path)
     if not teacher_onnx_path.exists() and getattr(args, 'teacher_onnx_url', None):
         print(f"[TEACHER] Downloading APISR.onnx teacher from {args.teacher_onnx_url}...")
         download_file_if_needed(args.teacher_onnx_url, teacher_onnx_path)
 
     target_builder = LumaGuidedAPISRTeacher(onnx_path=str(teacher_onnx_path)).to(device)
-    crit_core = Phase20APISRDistillLoss().to(device)
+    crit_core = Phase21TwinReflMasterLoss().to(device)
     crit_vgg = VGGPerceptualLoss(loss_weight=args.percep_weight).to(device)
     crit_luv = ColorLuvLoss(loss_weight=args.luv_weight).to(device)
 
-    # 4. Optimizer, Warmup + Cosine Scheduler, and EMA
-    optim_g = torch.optim.AdamW(raw_net_g.parameters(), lr=args.lr_g, betas=(0.9, 0.99), weight_decay=0.0)
+    # 4. Differential Early/Late Optimizer, Warmup + Cosine Scheduler, and EMA
+    early_p = [p for i in range(0, 20, 2) for p in raw_net_g.body[i].parameters()]
+    late_p = [p for i in range(20, 36, 2) for p in raw_net_g.body[i].parameters()]
+    optim_g = torch.optim.AdamW([
+        {'params': early_p, 'lr': args.lr_g * 0.52, 'weight_decay': 0.0},
+        {'params': late_p,  'lr': args.lr_g * 1.00, 'weight_decay': 0.0},
+    ], betas=(0.9, 0.99))
     ema_g = ModelEMA(raw_net_g, decay=args.ema_decay)
 
     if hasattr(torch.amp, 'GradScaler'):
@@ -135,7 +141,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[PHASE 20] Starting XyetherKiller APISR-Guided Master Training ({args.total_iters} iterations)...")
+    print(f"[PHASE 21] Starting XyetherKiller TwinReflMaster v2 Training ({args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -149,14 +155,14 @@ def train_xyether(args):
 
         step += 1
 
-        # Linear warmup for first 150 steps, then Cosine Annealing down to 2e-6
+        # Linear warmup for first 150 steps, then Cosine Annealing down to 6e-6
         if step <= args.warmup_iters:
             cur_lr = args.lr_g * (step / float(max(1, args.warmup_iters)))
         else:
             progress = (step - args.warmup_iters) / float(max(1, args.total_iters - args.warmup_iters))
-            cur_lr = 2.0e-6 + 0.5 * (args.lr_g - 2.0e-6) * (1.0 + np.cos(np.pi * progress))
-        for pg in optim_g.param_groups:
-            pg['lr'] = cur_lr
+            cur_lr = 6.0e-6 + 0.5 * (args.lr_g - 6.0e-6) * (1.0 + np.cos(np.pi * progress))
+        optim_g.param_groups[0]['lr'] = cur_lr * 0.52
+        optim_g.param_groups[1]['lr'] = cur_lr * 1.00
 
         lr_batch = lr_batch.to(device, non_blocking=True)
         hr_batch = hr_batch.to(device, non_blocking=True)
@@ -169,25 +175,20 @@ def train_xyether(args):
 
         with torch.amp.autocast(autocast_device, enabled=args.use_amp and torch.cuda.is_available()):
             sr_batch = net_g(lr_batch)
-            l_core, core_metrics = crit_core(sr_batch, clean_target, lr_batch, core_valley)
+            l_core, core_metrics = crit_core(sr_batch, clean_target, hr_batch, lr_batch)
+            l_anchor = 0.0
+            for l in range(1, 17):
+                w_cur = getattr(raw_net_g.body[2 * l], 'weight')[0:36, 0:36]
+                l_anchor = l_anchor + (w_cur.float() - init_luma_diag[l]).pow(2).mean()
             l_percep = crit_vgg(sr_batch, clean_target) if args.percep_weight > 0 else torch.tensor(0.0, device=device)
-            l_luv = crit_luv(sr_batch, clean_target)
-            total_loss_g = l_core + l_percep + l_luv
+            l_luv = crit_luv(sr_batch, clean_target) if args.luv_weight > 0 else torch.tensor(0.0, device=device)
+            total_loss_g = l_core + 0.015 * l_anchor + l_percep + l_luv
 
         scaler_g.scale(total_loss_g).backward()
         scaler_g.unscale_(optim_g)
         torch.nn.utils.clip_grad_norm_(raw_net_g.parameters(), max_norm=0.5)
         scaler_g.step(optim_g)
         scaler_g.update()
-
-        # Frobenius Weight Norm Preservation: prevents 18-layer plain CNN shrinkage
-        with torch.no_grad():
-            for name, p in raw_net_g.named_parameters():
-                if name in init_weight_norms:
-                    cur_norm = p.data.norm().item()
-                    min_norm = init_weight_norms[name]
-                    if cur_norm < min_norm and cur_norm > 1e-8:
-                        p.data.mul_(min_norm / cur_norm)
 
         ema_g.update(raw_net_g)
 
@@ -222,7 +223,7 @@ def train_xyether(args):
                 cv2.imwrite(str(sample_dir / f"step_{step:06d}.png"), cv2.cvtColor(grid_np, cv2.COLOR_RGB2BGR))
 
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyetherkiller_apisrmaster_step_{step}.pth"
+            ckpt_path = out_dir / f"xyetherkiller_apisrmaster_v21_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': raw_net_g.state_dict(),
@@ -238,16 +239,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase20_XyetherKiller_APISRMaster/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase21_XyetherKiller_APISRMaster_v2/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up -> {hf_repo}/checkpoints/Phase20_XyetherKiller_APISRMaster/{ckpt_path.name}", flush=True)
+                    print(f"[HF] Backed up -> {hf_repo}/checkpoints/Phase21_XyetherKiller_APISRMaster_v2/{ckpt_path.name}", flush=True)
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}", flush=True)
 
     # Export Final Production Model to PyTorch & ONNX
-    final_pth = out_dir / "XyetherKiller_APISRMaster_v20_Final.pth"
+    final_pth = out_dir / "XyetherKiller_APISRMaster_v21_Final.pth"
     torch.save({"params": ema_g.state_dict(), "params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}", flush=True)
 
@@ -259,7 +260,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase20_XyetherKiller_APISRMaster/XyetherKiller_APISRMaster_v20_Final.pth",
+                path_in_repo="checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_APISRMaster_v21_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -268,7 +269,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}", flush=True)
 
     try:
-        final_onnx = out_dir / "XyetherKiller_APISRMaster_v20_Final.onnx"
+        final_onnx = out_dir / "XyetherKiller_APISRMaster_v21_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         with torch.no_grad():
             torch.onnx.export(
@@ -287,7 +288,7 @@ def train_xyether(args):
         if hf_token and hf_repo and hf_repo.lower() != 'none':
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase20_XyetherKiller_APISRMaster/XyetherKiller_APISRMaster_v20_Final.onnx",
+                path_in_repo="checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_APISRMaster_v21_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -295,28 +296,28 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}", flush=True)
 
-    print("\n[COMPLETE] Phase 20 XyetherKiller APISRMaster training successfully finished!", flush=True)
+    print("\n[COMPLETE] Phase 21 XyetherKiller TwinReflMaster v2 training successfully finished!", flush=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train XyetherKiller APISRMaster Series (Phase 20)")
+    parser = argparse.ArgumentParser(description="Train XyetherKiller TwinReflMaster Series (Phase 21)")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K", help="Dataset folder")
-    parser.add_argument("--pretrained_path", type=str, default="./checkpoints/Phase19_XyetherKiller_ShockMaster/XyetherKiller_OwnSoup_Init_v19.pth", help="Authentic own-checkpoint base")
-    parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase19_XyetherKiller_ShockMaster/XyetherKiller_OwnSoup_Init_v19.pth", help="Authentic own-checkpoint warm-start URL")
+    parser.add_argument("--pretrained_path", type=str, default="./checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_OwnTwinRefl_Init_v21.pth", help="Authentic own-checkpoint base")
+    parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_OwnTwinRefl_Init_v21.pth", help="Authentic own-checkpoint warm-start URL")
     parser.add_argument("--teacher_onnx_path", type=str, default="./reference_models/Model/APISR.onnx", help="APISR.onnx teacher path")
     parser.add_argument("--teacher_onnx_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/teachers/APISR.onnx", help="APISR.onnx teacher download URL")
-    parser.add_argument("--output_dir", type=str, default="./output_models_phase20", help="Output directory")
+    parser.add_argument("--output_dir", type=str, default="./output_models_phase21", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size across GPUs")
     parser.add_argument("--patch_size", type=int, default=128, help="HR Patch size")
     parser.add_argument("--total_iters", type=int, default=3500, help="Total iterations")
     parser.add_argument("--warmup_iters", type=int, default=150, help="Linear warmup iterations")
-    parser.add_argument("--lr_g", type=float, default=5.5e-5, help="Generator learning rate")
+    parser.add_argument("--lr_g", type=float, default=1.4e-4, help="Generator learning rate")
     parser.add_argument("--valley_strength", type=float, default=2.85, help="Fallback valley strength")
     parser.add_argument("--shoulder_restore", type=float, default=0.65, help="Fallback shoulder restore")
     parser.add_argument("--step_shock", type=float, default=0.48, help="Fallback step shock")
     parser.add_argument("--percep_weight", type=float, default=0.0, help="Shallow VGG19 weight")
-    parser.add_argument("--luv_weight", type=float, default=0.05, help="ColorLuv cel-shading consistency weight")
-    parser.add_argument("--ema_decay", type=float, default=0.997, help="EMA decay")
+    parser.add_argument("--luv_weight", type=float, default=0.0, help="ColorLuv cel-shading consistency weight")
+    parser.add_argument("--ema_decay", type=float, default=0.996, help="EMA decay")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Use FP16 AMP")
     parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument("--log_every", type=int, default=100, help="Log interval")

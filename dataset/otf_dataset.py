@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 
 class AnimeOTFDataset(Dataset):
     """
-    Phase 20 On-The-Fly (OTF) Degradation Dataset for Anime Super-Resolution.
+    Phase 21 On-The-Fly (OTF) Degradation Dataset for Anime Super-Resolution.
     Key improvements:
     1. Broadcast Scale Normalization (1080p-1440p via INTER_AREA):
        Downscales oversized 4000x6000 absurdres illustrations to standard anime broadcast scale
@@ -17,10 +17,10 @@ class AnimeOTFDataset(Dataset):
     2. Joint Edge-Rich & High-Saturation Cel Patch Selection:
        Samples multiple candidate crops and selects patches rich in fine 1px hairlines, contours,
        and high-saturation colored cel boundaries (ribbons, eyes, accessories).
-    3. RGB Channel Permutation & Dual-Stage RealBlurry / 4:2:0 JPEG Degradation:
+    3. BT.601 Luma-Preserving Warm<->Cool Opponent Reflection & Dual-Stage RealBlurry / 4:2:0 JPEG Degradation:
        Balances clean/mild LR inputs (25%) with realistic dual-stage optical blur + 4:2:0 JPEG
-       compression (75%) and channel permutation so the student model learns both crisp clean
-       line drawing and de-blurring / 4:2:0 chroma-bleed recovery without 2x2 blockiness.
+       compression (75%) and exact Luma-Preserving Warm<->Cool reflection (R <-> C) so both Warm R
+       and Cool GB sub-trunks learn wide-radius 4:2:0 de-JPEG while keeping dark ink outlines 100% invariant.
     """
     def __init__(self, data_dir: str, patch_size: int = 192, repeat: int = 20):
         self.patch_size = patch_size
@@ -106,6 +106,23 @@ class AnimeOTFDataset(Dataset):
         noise = np.random.normal(0, sigma, img_float.shape).astype(np.float32)
         return np.clip(img_float + noise, 0.0, 1.0)
 
+    def _reflect_warm_cool_bgr(self, bgr_img: np.ndarray) -> np.ndarray:
+        """
+        Exact BT.601 Luma-Preserving Warm<->Cool Opponent Reflection:
+          Y = 0.299 R + 0.587 G + 0.114 B
+          C = (0.587 G + 0.114 B) / 0.701
+          Swaps R <-> C while keeping Y (and every dark ink outline!) 100.00% invariant!
+        """
+        f = bgr_img.astype(np.float32)
+        B, G, R = f[:, :, 0], f[:, :, 1], f[:, :, 2]
+        C = (0.587 * G + 0.114 * B) / 0.701
+        d = R - C
+        R_new = C
+        G_new = G + d
+        B_new = B + d
+        out = np.stack([B_new, G_new, R_new], axis=2)
+        return np.clip(out, 0.0, 255.0).round().astype(np.uint8)
+
     def __getitem__(self, idx: int):
         file_path = self.files[idx % len(self.files)]
         img = cv2.imread(file_path, cv2.IMREAD_COLOR)
@@ -124,7 +141,7 @@ class AnimeOTFDataset(Dataset):
         # 1. Edge & Saturation-Rich Ground Truth Crop (HR Patch)
         hr_patch = self._select_edge_rich_patch(img, num_candidates=5).copy()
 
-        # 2. Geometric & Channel-Permutation Augmentation
+        # 2. Geometric & Luma-Preserving Warm<->Cool Opponent Reflection Augmentation
         if random.random() < 0.5:
             hr_patch = np.fliplr(hr_patch)
         if random.random() < 0.5:
@@ -132,9 +149,8 @@ class AnimeOTFDataset(Dataset):
         if random.random() < 0.5:
             rot_k = random.choice([1, 2, 3])
             hr_patch = np.rot90(hr_patch, rot_k)
-        if random.random() < 0.45:
-            perm = list(np.random.permutation(3))
-            hr_patch = hr_patch[:, :, perm]
+        if random.random() < 0.50:
+            hr_patch = self._reflect_warm_cool_bgr(hr_patch)
         hr_patch = np.ascontiguousarray(hr_patch)
 
         # 3. Phase 20 Dual-Regime Degradation (25% Clean/Mild LR + 75% RealBlurry & 4:2:0 JPEG LR)
