@@ -59,7 +59,7 @@ def train_xyether(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     gpu_info = f"{num_gpus}x {torch.cuda.get_device_name(0)}" if num_gpus > 0 else "CPU"
-    print(f"[PHASE 21: XYETHERKILLER TWINREFL MASTER v2 (100% OWN STUDENT CKPT)] Initializing on: {device} ({gpu_info})")
+    print(f"[PHASE 22: XYETHERKILLER TWINREFL MASTER v3 (PEAK PRECISION — 100% OWN STUDENT CKPT)] Initializing on: {device} ({gpu_info})")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -141,7 +141,7 @@ def train_xyether(args):
 
     evaluator = XyetherEvaluator(device=device)
 
-    print(f"[PHASE 21] Starting XyetherKiller TwinReflMaster v2 Training ({args.total_iters} iterations)...")
+    print(f"[PHASE 22] Starting XyetherKiller TwinReflMaster v3 Training ({args.total_iters} iterations)...")
     step = 0
     start_time = time.time()
     data_iter = iter(dataloader)
@@ -182,7 +182,7 @@ def train_xyether(args):
                 l_anchor = l_anchor + (w_cur.float() - init_luma_diag[l]).pow(2).mean()
             l_percep = crit_vgg(sr_batch, clean_target) if args.percep_weight > 0 else torch.tensor(0.0, device=device)
             l_luv = crit_luv(sr_batch, clean_target) if args.luv_weight > 0 else torch.tensor(0.0, device=device)
-            total_loss_g = l_core + 0.015 * l_anchor + l_percep + l_luv
+            total_loss_g = l_core + 0.020 * l_anchor + l_percep + l_luv
 
         scaler_g.scale(total_loss_g).backward()
         scaler_g.unscale_(optim_g)
@@ -223,7 +223,7 @@ def train_xyether(args):
                 cv2.imwrite(str(sample_dir / f"step_{step:06d}.png"), cv2.cvtColor(grid_np, cv2.COLOR_RGB2BGR))
 
         if step % args.save_every == 0 or step == args.total_iters:
-            ckpt_path = out_dir / f"xyetherkiller_apisrmaster_v21_step_{step}.pth"
+            ckpt_path = out_dir / f"xyetherkiller_apisrmaster_v22_step_{step}.pth"
             torch.save({
                 'step': step,
                 'params': raw_net_g.state_dict(),
@@ -239,16 +239,16 @@ def train_xyether(args):
                     api = HfApi(token=hf_token)
                     api.upload_file(
                         path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/Phase21_XyetherKiller_APISRMaster_v2/{ckpt_path.name}",
+                        path_in_repo=f"checkpoints/Phase22_XyetherKiller_APISRMaster_v3/{ckpt_path.name}",
                         repo_id=hf_repo,
                         repo_type="model"
                     )
-                    print(f"[HF] Backed up -> {hf_repo}/checkpoints/Phase21_XyetherKiller_APISRMaster_v2/{ckpt_path.name}", flush=True)
+                    print(f"[HF] Backed up -> {hf_repo}/checkpoints/Phase22_XyetherKiller_APISRMaster_v3/{ckpt_path.name}", flush=True)
                 except Exception as e:
                     print(f"[WARN] Hugging Face upload error: {e}", flush=True)
 
     # Export Final Production Model to PyTorch & ONNX
-    final_pth = out_dir / "XyetherKiller_APISRMaster_v21_Final.pth"
+    final_pth = out_dir / "XyetherKiller_APISRMaster_v22_Final.pth"
     torch.save({"params": ema_g.state_dict(), "params_ema": ema_g.state_dict()}, str(final_pth))
     print(f"\n[FINAL EXPORT] Production PyTorch weights saved -> {final_pth}", flush=True)
 
@@ -260,7 +260,7 @@ def train_xyether(args):
             api = HfApi(token=hf_token)
             api.upload_file(
                 path_or_fileobj=str(final_pth),
-                path_in_repo="checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_APISRMaster_v21_Final.pth",
+                path_in_repo="checkpoints/Phase22_XyetherKiller_APISRMaster_v3/XyetherKiller_APISRMaster_v22_Final.pth",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -269,7 +269,7 @@ def train_xyether(args):
             print(f"[WARN] Final HF upload error: {e}", flush=True)
 
     try:
-        final_onnx = out_dir / "XyetherKiller_APISRMaster_v21_Final.onnx"
+        final_onnx = out_dir / "XyetherKiller_APISRMaster_v22_Final.onnx"
         dummy_in = torch.randn(1, 3, 256, 256, device=device)
         with torch.no_grad():
             torch.onnx.export(
@@ -288,7 +288,7 @@ def train_xyether(args):
         if hf_token and hf_repo and hf_repo.lower() != 'none':
             api.upload_file(
                 path_or_fileobj=str(final_onnx),
-                path_in_repo="checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_APISRMaster_v21_Final.onnx",
+                path_in_repo="checkpoints/Phase22_XyetherKiller_APISRMaster_v3/XyetherKiller_APISRMaster_v22_Final.onnx",
                 repo_id=hf_repo,
                 repo_type="model"
             )
@@ -296,17 +296,17 @@ def train_xyether(args):
     except Exception as e:
         print(f"[WARN] ONNX export skipped: {e}", flush=True)
 
-    print("\n[COMPLETE] Phase 21 XyetherKiller TwinReflMaster v2 training successfully finished!", flush=True)
+    print("\n[COMPLETE] Phase 22 XyetherKiller TwinReflMaster v3 training successfully finished!", flush=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train XyetherKiller TwinReflMaster Series (Phase 21)")
+    parser = argparse.ArgumentParser(description="Train XyetherKiller TwinReflMaster Series (Phase 22)")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K", help="Dataset folder")
     parser.add_argument("--pretrained_path", type=str, default="./checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_OwnTwinRefl_Init_v21.pth", help="Authentic own-checkpoint base")
     parser.add_argument("--pretrained_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/checkpoints/Phase21_XyetherKiller_APISRMaster_v2/XyetherKiller_OwnTwinRefl_Init_v21.pth", help="Authentic own-checkpoint warm-start URL")
     parser.add_argument("--teacher_onnx_path", type=str, default="./reference_models/Model/APISR.onnx", help="APISR.onnx teacher path")
     parser.add_argument("--teacher_onnx_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/teachers/APISR.onnx", help="APISR.onnx teacher download URL")
-    parser.add_argument("--output_dir", type=str, default="./output_models_phase21", help="Output directory")
+    parser.add_argument("--output_dir", type=str, default="./output_models_phase22", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size across GPUs")
     parser.add_argument("--patch_size", type=int, default=128, help="HR Patch size")
     parser.add_argument("--total_iters", type=int, default=3500, help="Total iterations")

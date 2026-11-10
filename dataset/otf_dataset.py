@@ -78,14 +78,16 @@ class AnimeOTFDataset(Dataset):
             patch = img[top:top + ps, left:left + ps]
             if patch.shape[0] != ps or patch.shape[1] != ps:
                 patch = img[:ps, :ps]
-            # Fast gradient energy + color saturation boundary score
-            g = patch[:, :, 1].astype(np.float32)
-            dx = np.abs(g[:, 1:] - g[:, :-1]).mean()
-            dy = np.abs(g[1:, :] - g[:-1, :]).mean()
+            # Phase 22 Multi-Channel RGB Edge Energy + Saturated Warm/Red & Cool Cel Boundary Score
+            # (Fixes Green-channel-only blindness where pure Red [182, 0, 0] to Black [0, 0, 0] had |dG| == 0!)
+            f_p = patch.astype(np.float32)
+            dx = np.abs(f_p[:, 1:, :] - f_p[:, :-1, :]).max(axis=2).mean()
+            dy = np.abs(f_p[1:, :, :] - f_p[:-1, :, :]).max(axis=2).mean()
             edge_energy = dx + dy
-            c_span = (patch.max(axis=2).astype(np.float32) - patch.min(axis=2).astype(np.float32))
-            sat_ratio = float((c_span > 100.0).mean())
-            score = edge_energy * (1.0 + 0.45 * sat_ratio)
+            c_span = f_p.max(axis=2) - f_p.min(axis=2)
+            sat_ratio = float((c_span > 95.0).mean())
+            warm_red_ratio = float(((f_p[:, :, 2] - np.maximum(f_p[:, :, 1], f_p[:, :, 0])) > 90.0).mean())
+            score = edge_energy * (1.0 + 0.55 * sat_ratio + 1.40 * warm_red_ratio)
             if score > best_score:
                 best_score = score
                 best_patch = patch
@@ -150,7 +152,12 @@ class AnimeOTFDataset(Dataset):
             rot_k = random.choice([1, 2, 3])
             hr_patch = np.rot90(hr_patch, rot_k)
         if random.random() < 0.50:
-            hr_patch = self._reflect_warm_cool_bgr(hr_patch)
+            # Preserve genuinely pure warm/red patches (e.g. R-max(G,B) > 100 on >=3% of pixels) at least 75% of the time
+            # so the network always sees authentic pure-red saturation (G=0, B=0) alongside reflected warm/cool pairs!
+            f_hr = hr_patch.astype(np.float32)
+            pure_red_frac = float(((f_hr[:, :, 2] - np.maximum(f_hr[:, :, 1], f_hr[:, :, 0])) > 100.0).mean())
+            if pure_red_frac < 0.03 or random.random() < 0.25:
+                hr_patch = self._reflect_warm_cool_bgr(hr_patch)
         hr_patch = np.ascontiguousarray(hr_patch)
 
         # 3. Phase 20 Dual-Regime Degradation (25% Clean/Mild LR + 75% RealBlurry & 4:2:0 JPEG LR)
