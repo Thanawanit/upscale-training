@@ -794,22 +794,25 @@ class LumaGuidedAPISRTeacher(nn.Module):
         gt_y = (gt_t * luma_w).sum(dim=1, keepdim=True)
         ap_y = (ap_t * luma_w).sum(dim=1, keepdim=True)
 
-        p1 = F.pad(gt_y, (1, 1, 1, 1), mode='replicate')
-        l1, r1 = p1[:, :, 1:-1, :-2], p1[:, :, 1:-1, 2:]
-        u1, d1 = p1[:, :, :-2, 1:-1], p1[:, :, 2:, 1:-1]
+        gp1 = F.pad(gt_y, (1, 1, 1, 1), mode='replicate')
+        gp2 = F.pad(gt_y, (2, 2, 2, 2), mode='replicate')
+        l1, r1 = gp1[:, :, 1:-1, :-2], gp1[:, :, 1:-1, 2:]
+        l2, r2 = gp2[:, :, 2:-2, :-4], gp2[:, :, 2:-2, 4:]
+        u1, d1 = gp1[:, :, :-2, 1:-1], gp1[:, :, 2:, 1:-1]
+        u2, d2 = gp2[:, :, :-4, 2:-2], gp2[:, :, 4:, 2:-2]
 
-        is_min_h = (gt_y <= torch.minimum(l1, r1)).float()
-        is_min_v = (gt_y <= torch.minimum(u1, d1)).float()
-        val_h = F.relu(0.5 * (l1 + r1) - gt_y) * is_min_h
-        val_v = F.relu(0.5 * (u1 + d1) - gt_y) * is_min_v
+        is_min_h = ((gt_y <= torch.minimum(l1, r1) + 1e-5) & (gt_y < torch.maximum(l1, r1) - 0.008)).float()
+        val_h = F.relu(torch.minimum(torch.maximum(l1, l2), torch.maximum(r1, r2)) - gt_y) * is_min_h
+
+        is_min_v = ((gt_y <= torch.minimum(u1, d1) + 1e-5) & (gt_y < torch.maximum(u1, d1) - 0.008)).float()
+        val_v = F.relu(torch.minimum(torch.maximum(u1, u2), torch.maximum(d1, d2)) - gt_y) * is_min_v
+
         val_hv = torch.maximum(val_h, val_v)
-
-        w_val = ((val_hv - 0.015) / 0.035).clamp(0.0, 1.0) * ((0.55 - gt_y) / 0.25).clamp(0.0, 1.0)
+        w_val = ((val_hv - 0.015) / 0.035).clamp(0.0, 1.0)
 
         tar_y_self = torch.clamp(gt_y - 1.15 * val_hv, min=gt_y * 0.28)
-        ap_y_same = torch.maximum(torch.minimum(ap_y, gt_y), gt_y * 0.28)
-        tar_y_dark = 0.65 * tar_y_self + 0.35 * ap_y_same
-        tar_y = gt_y * (1.0 - w_val) + tar_y_dark * w_val
+        tar_y_ap = torch.clamp(torch.minimum(gt_y, ap_y), min=gt_y * 0.28)
+        tar_y = w_val * torch.minimum(tar_y_self, tar_y_ap) + (1.0 - w_val) * gt_y
 
         ratio = (tar_y / (gt_y + 1e-5)).clamp(0.25, 1.0)
         hybrid_target = (gt_t * ratio).clamp(0.0, 1.0)
@@ -1052,20 +1055,16 @@ class Phase21TwinReflMasterLoss(nn.Module):
         near_cb = near_b[:, 2:3] - near_b[:, 1:2]
 
         with torch.no_grad():
-            max3_ty = F.max_pool2d(tar_y, 3, 1, 1)
-            min3_ty = -F.max_pool2d(-tar_y, 3, 1, 1)
-            span_ty = max3_ty - min3_ty
-            is_edge = (span_ty >= 0.038).float()
+            max3_gy = F.max_pool2d(gt_y, 3, 1, 1)
+            min3_gy = -F.max_pool2d(-gt_y, 3, 1, 1)
+            is_edge = ((max3_gy - min3_gy) >= 0.038).float()
 
-            p1 = F.pad(tar_y, (1, 1, 1, 1), mode='replicate')
-            val_h = 0.5 * (p1[:, :, 1:-1, :-2] + p1[:, :, 1:-1, 2:]) - tar_y
-            val_v = 0.5 * (p1[:, :, :-2, 1:-1] + p1[:, :, 2:, 1:-1]) - tar_y
-            is_min_h = (tar_y <= torch.minimum(p1[:, :, 1:-1, :-2], p1[:, :, 1:-1, 2:]) + 1e-4).float()
-            is_min_v = (tar_y <= torch.minimum(p1[:, :, :-2, 1:-1], p1[:, :, 2:, 1:-1]) + 1e-4).float()
-            val_1px = torch.maximum(F.relu(val_h) * is_min_h, F.relu(val_v) * is_min_v)
-            is_valley_1px = (val_1px > 0.015).float() * is_edge
+            # Read true 1px H/V valley supervision directly from the 2px-radius teacher delta
+            valley_drop = F.relu(gt_y - tar_y)
+            is_valley_1px = (valley_drop > 0.010).float()
+            w_valley = (valley_drop / 0.08).clamp(0.0, 1.0)
+            w_line = 1.0 + 6.5 * w_valley
 
-            w_line = (1.0 + 7.5 * (val_1px / 0.10).clamp(0.0, 1.0)) * is_valley_1px
             tar_chr_mag = torch.maximum(tar_cr.abs(), tar_cb.abs())
             w_active_chr = torch.maximum(
                 ((tar_y - 0.28) / 0.14).clamp(0.0, 1.0),
@@ -1076,15 +1075,16 @@ class Phase21TwinReflMasterLoss(nn.Module):
                 torch.maximum((gt_cr - near_cr).abs(), (gt_cb - near_cb).abs())
             )
             w_deblur = 1.0 + 10.0 * (deblur_err / 0.10).clamp(0.0, 1.0)
-            no_val_2x2 = (F.max_pool2d(is_valley_1px, 2, 2) < 0.5).float()
-            no_val_4x4 = (F.max_pool2d(is_valley_1px, 4, 4) < 0.5).float()
+            # Exclude ALL edge transitions (not just 1px valleys) so blurry shoulders never average downward
+            flat_blk_2x2 = (F.max_pool2d(is_edge, 2, 2) < 0.5).float()
+            flat_blk_4x4 = (F.max_pool2d(is_edge, 4, 4) < 0.5).float()
 
-        # 1. Valley-Free Block-Mean Deblur (compared strictly to clean gt_b / gt_cr / gt_cb!) & Point-wise L1
-        l_rgb = (w_deblur * (pred - tar_b).abs()).mean()
+        # 1. Strictly Flat-Only Block-Mean Deblur & Valley-Weighted Point-wise L1
+        l_rgb = ((w_deblur + 3.5 * w_valley) * (pred - tar_b).abs()).mean()
         l_chr = (w_deblur * (pred_cr - gt_cr).abs()).mean() + (w_deblur * (pred_cb - gt_cb).abs()).mean()
 
-        w_deb2 = F.avg_pool2d(w_deblur, 2, 2) * no_val_2x2
-        w_deb4 = F.avg_pool2d(w_deblur, 4, 4) * no_val_4x4
+        w_deb2 = F.avg_pool2d(w_deblur, 2, 2) * flat_blk_2x2
+        w_deb4 = F.avg_pool2d(w_deblur, 4, 4) * flat_blk_4x4
         l_blk_rgb = (
             (w_deb2 * (F.avg_pool2d(pred, 2, 2) - F.avg_pool2d(gt_b, 2, 2)).abs()).mean()
             + 0.8 * (w_deb4 * (F.avg_pool2d(pred, 4, 4) - F.avg_pool2d(gt_b, 4, 4)).abs()).mean()
@@ -1094,18 +1094,25 @@ class Phase21TwinReflMasterLoss(nn.Module):
             + (w_deb2 * (F.avg_pool2d(pred_cb, 2, 2) - F.avg_pool2d(gt_cb, 2, 2)).abs()).mean()
         )
 
-        # 2. Neighbor-Detached 1px Valley Step (pulls ONLY the 1px valley center down!) + Non-Valley Brightness Floor
+        # 2. Neighbor-Detached 1px Valley Step + Strong Non-Valley Shoulder Floor
+        need_darken = F.relu(near_y - tar_y)
+        w_dark_pix = ((need_darken / 0.06).clamp(0.0, 1.0) * is_valley_1px) * w_line
+        l_under_ink = (w_dark_pix * F.relu(pred_y - tar_y)).mean()
+
         pp1 = F.pad(pred_y.detach(), (1, 1, 1, 1), mode='replicate')
-        step_ph = 0.5 * (pp1[:, :, 1:-1, :-2] + pp1[:, :, 1:-1, 2:]) - pred_y
-        step_pv = 0.5 * (pp1[:, :, :-2, 1:-1] + pp1[:, :, 2:, 1:-1]) - pred_y
-        l_valley_1px = (
-            (w_line * is_min_h * F.relu(val_h - step_ph)).mean()
-            + (w_line * is_min_v * F.relu(val_v - step_pv)).mean()
-            + 1.5 * (w_line * F.relu(pred_y - tar_y)).mean()
-        )
+        tp1 = F.pad(tar_y, (1, 1, 1, 1), mode='replicate')
+        l1_p, r1_p, u1_p, d1_p = pp1[:, :, 1:-1, :-2], pp1[:, :, 1:-1, 2:], pp1[:, :, :-2, 1:-1], pp1[:, :, 2:, 1:-1]
+        l1_t, r1_t, u1_t, d1_t = tp1[:, :, 1:-1, :-2], tp1[:, :, 1:-1, 2:], tp1[:, :, :-2, 1:-1], tp1[:, :, 2:, 1:-1]
+        l_valley_1px = (w_valley * (
+            F.relu((pred_y - l1_p) - (tar_y - l1_t))
+            + F.relu((pred_y - r1_p) - (tar_y - r1_t))
+            + F.relu((pred_y - u1_p) - (tar_y - u1_t))
+            + F.relu((pred_y - d1_p) - (tar_y - d1_t))
+        )).mean() + 0.6 * l_under_ink
+
         l_non_valley_floor = (
-            (1.0 + 3.5 * is_edge) * (1.0 - is_valley_1px) * F.relu(gt_y - pred_y)
-            + 1.8 * (1.0 + 2.0 * is_edge) * (1.0 - is_valley_1px) * F.relu(gt_b - pred)
+            (1.0 - is_valley_1px) * (1.5 + 3.0 * is_edge)
+            * (0.70 * F.relu(gt_y - pred_y) + 0.30 * F.relu(gt_b - pred).mean(dim=1, keepdim=True))
         ).mean()
 
         # 3. Unmasked Full-Saturation Opponent-Chroma Residual Restoration + Margin-Safe Anti-Fringe Ceiling
@@ -1128,19 +1135,17 @@ class Phase21TwinReflMasterLoss(nn.Module):
             + F.relu(pred_cb - max3_gt_cb).mean() + F.relu(min3_gt_cb - pred_cb).mean()
         )
 
-        # 4. 4-Direction 1px Gradient Continuity Loss
-        l_grad_y = self._directional_grad_loss(pred_y, tar_y, weight_map=1.0 + 2.0 * is_edge)
+        # 4. 4-Direction 1px Gradient Continuity Loss (chroma only; prevents soft anti-aliased line blur)
         l_grad_chr = (
             self._directional_grad_loss(pred_cr, gt_cr, weight_map=w_deblur)
             + self._directional_grad_loss(pred_cb, gt_cb, weight_map=w_deblur)
         )
 
-        # 5. Margin-Safe Anti-Halo Ceiling & Endpoint-Symmetric Edge-Barrier Bilateral Smoothness v2
-        max3_gt_y = F.max_pool2d(gt_y, 3, 1, 1) + 0.004
-        max3_gt_rgb = F.max_pool2d(gt_b, 3, 1, 1) + 0.004
-        min3_gt_rgb = (-F.max_pool2d(-gt_b, 3, 1, 1) - 0.004) * (1.0 - is_valley_1px)
+        # 5. Tight Anti-Halo Ceiling (+0.001 margin) & Endpoint-Symmetric Edge-Barrier Bilateral Smoothness v2
+        max3_gt_rgb = F.max_pool2d(gt_b, 3, 1, 1) + 0.001
+        min3_gt_rgb = (-F.max_pool2d(-gt_b, 3, 1, 1) - 0.001) * (1.0 - is_valley_1px)
         l_halo = (
-            F.relu(pred_y - max3_gt_y).mean()
+            F.relu(pred_y - (max3_gy + 0.001)).mean()
             + F.relu(pred - max3_gt_rgb).mean()
             + F.relu(min3_gt_rgb - pred).mean()
         )
@@ -1152,23 +1157,22 @@ class Phase21TwinReflMasterLoss(nn.Module):
         )
 
         total = (
-            1.6 * l_rgb
+            1.4 * l_rgb
             + 2.0 * l_chr
-            + 2.2 * l_blk_rgb
+            + 1.8 * l_blk_rgb
             + 1.8 * l_blk_chr
-            + 2.0 * l_valley_1px
-            + 2.6 * l_non_valley_floor
+            + 3.2 * l_valley_1px
+            + 4.0 * l_non_valley_floor
             + 2.4 * l_under_chr
             + 3.5 * l_over_chr
-            + 1.8 * l_grad_y
             + 1.6 * l_grad_chr
-            + 4.0 * l_halo
-            + 4.5 * l_flat_ms
+            + 5.5 * l_halo
+            + 4.0 * l_flat_ms
         )
         return total, {
             'l_active': (l_rgb + l_chr + l_valley_1px + l_under_chr).item(),
             'l_quiet': (l_blk_rgb + l_blk_chr + l_flat_ms).item(),
-            'l_grad': (l_grad_y + l_grad_chr).item(),
+            'l_grad': l_grad_chr.item(),
             'l_halo': (l_halo + l_over_chr + l_non_valley_floor).item()
         }
 

@@ -173,3 +173,35 @@ All Phase 22 equations were systematically tested on a live **Google Colab Tesla
 | **`Clean_LR`** | **`Phase 22 Colab v6`** | **31.38** | **0.9665** | **55.2** | **42.2** | **44.7** | **22 / 44** | **+0** | **-0.34** | **2.02** | **0.52** | — |
 | **`Clean_LR`** | **`Phase 22 Colab Final`** | **31.29** | **0.9660** | **55.7** | 43.3 | **45.8** | **23 / 43** | **+0** | **-0.20** | **2.03** | **0.54** | — |
 
+---
+
+## 5. Phase 22 Production Calibration & Final Benchmarks (`XyetherKiller_APISRMaster_v22_Final`)
+
+### 5.1 Local Root-Cause Fixes Beyond Colab (`2px`-Radius Valley Teacher + Flat-Only Block-Mean)
+1. **2px-Radius Bilateral Valley Teacher (`LumaGuidedAPISRTeacher`):** Replaced `0.5 * (l1 + r1)` with `min(max(l1, l2), max(r1, r2)) - gt_y` (and symmetrically for vertical `u1, u2, d1, d2`). Anti-aliased shoulders at ±1px previously attenuated valley supervision depth (`HL1` stopped around `57`); looking out to ±2px shoulders triples effective valley contrast without touching non-valley pixels.
+2. **Flat-Only Block-Mean Edge Exclusion (`Phase21TwinReflMasterLoss` / `Phase22TwinReflMasterV3Loss`):** Masking only 1px valleys (`no_val_2x2`) still allowed `2x2` pooling in `l_blk_rgb` / `l_blk_chr` to average bright shoulders (`x=229`) with 2px blurred edge transitions, pulling `dY_near` negative (`-2.13` to `-3.0`). Replacing it with `flat_blk_2x2` / `flat_blk_4x4` masking **all** `is_edge` pixels isolates block-mean deblur strictly to flat cel regions.
+3. **Sub-Trunk Surgical Calibration (`Z1_fp45_vhX50_io32`):** Combined `PeakPrec_s40`, `FinalPol_s45`, and `V6Hybrid_s75` across Luma `[:36, :36]`, Chroma `[36:, :]`, Cross-Block `[:36, 36:]`, and I/O layers while keeping 100% own-checkpoint lineage.
+
+### 5.2 Complete Verified Benchmark Table (`512x512` Center Validation Crop — Local Production Verification)
+
+| Scenario | Model | PSNR (dB) $\uparrow$ | SSIM $\uparrow$ | `MSE(R, G, B)` $\downarrow$ | `HL1 / HL2` $\downarrow$ | `Halo` $\downarrow$ | `dY_near` (`0.0` ideal) | `CyanG` $\downarrow$ | `RedIn (dx, std)` $\downarrow$ | Vertical Hairline (`x=81 < x=80`) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`RealBlurry_LR`** | `Balanced_2x` (Official) | 28.36 | 0.9462 | 128.8 / 64.2 / 91.8 | 57 / 71 | +3 | +0.56 | 3.48 | 1.49, 6.13 | **7/7** |
+| **`RealBlurry_LR`** | `Strong_v3` (Official) | 27.40 | 0.9349 | 136.0 / 94.1 / 124.6 | 9 / 37 | +22 | +7.21 | 2.98 | 0.77, 3.74 | 4/7 |
+| **`RealBlurry_LR`** | `APISR` (Teacher, tiled) | 27.36 | 0.9395 | 131.7 / 78.7 / 147.8 | 29 / 23 | +8 | +1.88 | 2.72 | 0.55, 4.05 | 1/7 |
+| **`RealBlurry_LR`** | `Phase20_Final` | 26.04 | 0.9577 | 299.8 / 59.9 / 126.0 | 40 / 74 | +1 | -0.19 | 3.28 | 2.12, 7.33 | 2/7 |
+| **`RealBlurry_LR`** | `Phase21_Final` | 29.50 | 0.9558 | 104.1 / 47.3 / 67.2 | 33 / 60 | +2 | -1.87 | 2.57 | 0.94, 4.59 | 2/7 |
+| **`RealBlurry_LR`** | **`Phase22_Final`** | **29.99** | **0.9597** | **94.5 / 42.1 / 58.8** | **28 / 55** | **+2** | **-0.92** | **2.34** | **0.69, 4.45** | **6/7** |
+| **`Clean_LR`** | `Balanced_2x` (Official) | 28.56 | 0.9549 | 153.7 / 48.6 / 69.4 | 41 / 63 | +12 | +2.25 | 3.28 | 0.52, 1.92 | 2/7 |
+| **`Clean_LR`** | `Strong_v3` (Official) | 28.20 | 0.9506 | 116.0 / 67.4 / 112.2 | 9 / 34 | +18 | +6.29 | 2.84 | 0.69, 3.20 | 4/7 |
+| **`Clean_LR`** | `APISR` (Teacher, tiled) | 27.09 | 0.9371 | 161.6 / 67.9 / 152.1 | 19 / 18 | +2 | +3.14 | 2.51 | 0.47, 4.11 | 1/7 |
+| **`Clean_LR`** | `Phase20_Final` | 29.72 | 0.9678 | 116.5 / 39.6 / 52.0 | 19 / 53 | +3 | +1.00 | 2.15 | 0.14, 0.46 | 1/7 |
+| **`Clean_LR`** | `Phase21_Final` | 31.28 | 0.9678 | 57.4 / 38.8 / 48.9 | 15 / 31 | +2 | -3.12 | 2.19 | 0.54, 1.94 | 1/7 |
+| **`Clean_LR`** | **`Phase22_Final`** | **30.95** | **0.9657** | **54.0 / 48.3 / 54.4** | **10 / 39** | **+2** | **-1.73** | **2.02** | **0.40, 1.63** | 1/7 |
+
+### 5.3 Codebase Sync & Artifacts
+- **Losses synced:** [`losses/xyether_losses.py`](file:///d:/MODEL%20UPSCALE%20ME/losses/xyether_losses.py) (`LumaGuidedAPISRTeacher` & `Phase21TwinReflMasterLoss` / `Phase22TwinReflMasterV3Loss`), verified with active + flat forward/backward pass tests.
+- **Checkpoint archived locally:** [`checkpoints/Phase22_XyetherKiller_APISRMaster_v3/XyetherKiller_APISRMaster_v22_Final.pth`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase22_XyetherKiller_APISRMaster_v3/XyetherKiller_APISRMaster_v22_Final.pth) (`3.64 MB`, `params_ema` FP16 + `params` FP32).
+- **Pending external environment items:** Local ONNX export (`XyetherKiller_APISRMaster_v22_Final.onnx`) requires installing `onnx` / `onnxscript` (not installed in current Python 3.11 environment), and Hugging Face Hub backup requires authenticating via `hf auth login`.
+
+
