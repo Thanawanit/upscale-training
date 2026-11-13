@@ -204,4 +204,20 @@ All Phase 22 equations were systematically tested on a live **Google Colab Tesla
 - **Checkpoint archived locally:** [`checkpoints/Phase22_XyetherKiller_APISRMaster_v3/XyetherKiller_APISRMaster_v22_Final.pth`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase22_XyetherKiller_APISRMaster_v3/XyetherKiller_APISRMaster_v22_Final.pth) (`3.64 MB`, `params_ema` FP16 + `params` FP32).
 - **Pending external environment items:** Local ONNX export (`XyetherKiller_APISRMaster_v22_Final.onnx`) requires installing `onnx` / `onnxscript` (not installed in current Python 3.11 environment), and Hugging Face Hub backup requires authenticating via `hf auth login`.
 
+---
+
+## 6. Post-Phase 22 Root-Cause Discovery: Why Hairlines Still Wobble vs `APISR` (`GOD TIER` Comparison)
+
+User visual review identified persistent **hairline bending/wobble ("เส้นเบี้ยว")** in `Phase 22 Final` compared directly against `APISR (4x->2x)`. Pixel-level diagnosis ([`scratch/diagnose_vs_apisr.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/diagnose_vs_apisr.py)) and `6x` crop inspection ([`diag_hairline_6x.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/diag_hairline_6x.png)) proved the exact cause:
+
+1. **GT's Subpixel Shift (`x=80 -> x=81`) + Blurry Anti-Aliasing vs `APISR`'s Clean Straight Geometry (`RealBlurry_LR`, `y=70..90`):**
+   - `GT` has a soft double-column transition shifting diagonally across subpixels: `y=70..76` sits at `x=80` (`[68, 79, 63, 68]`), then at `y=80..88` blurs across BOTH columns `x=80, 81` (`[74, 71]`, `[77, 71]`, `[79, 69]`, `[84, 69]`, `[87, 70]`).
+   - When degraded to `256x256` `LR`, columns `(80, 81)` merge into one LR column — making a `2x` subpixel shift from `x=80` to `x=81` physically ill-posed.
+   - **`APISR` (`GOD TIER` geometry)** snaps to a **completely straight, crisp 1px jet-black column at `x=80`** (`[39, 26, 10, 22, 21, 24, 29, 24, 22, 29]`) with clean unblurred shoulders (`94..107`) before curving smoothly at `y=92..94`, and keeps diagonal strokes crisp 1px black (`14..27`).
+   - **`Phase 22 Final`** tried to follow `GT` (`l_rgb` / `l_non_valley_floor`) AND only supervised 1px H/V minima (`LumaGuidedAPISRTeacher`), causing a kink/bend at the fork (`y=78..82`: `[36,64]` -> `[89,78]` -> `[75,56]` -> `[70,49]`), leaving `P22` blurry 2px gray and visibly bent ("เบี้ยว").
+2. **Metric Bug in `VOK` (`x=81 < x=80`):**
+   - `VOK` penalized `APISR` as `1/7` because `APISR` kept the vertical hairline straight at `x=80`, falsely rewarding models that bent `x=80 -> x=81`!
+3. **Direction Forward (`Phase 23`):** Supervise **all edges, corners, forks, and diagonal strokes** directly with **`APISR`'s geometry (`ap_t`)** rather than blurry anti-aliased `GT`, while clamping **upward edge halo** (`<= max3(GT) + margin`) and preserving `GT` flat-region true color (`1 - is_edge`).
+
+
 

@@ -1179,3 +1179,119 @@ class Phase21TwinReflMasterLoss(nn.Module):
 
 Phase22TwinReflMasterV3Loss = Phase21TwinReflMasterLoss
 
+
+class Phase23ZeroHaloAPISRTeacher(LumaGuidedAPISRTeacher):
+    """
+    Phase 23 Zero-Halo APISR Geometric Teacher:
+    - Edges & lines/curves (all angles: H, V, diagonals, corners): follow APISR(Clean_LR -> 4x->2x)
+      vector geometry instead of blurry GT anti-aliasing, with upward overshoot capped strictly to
+      local 3x3 GT maximum (preserves crisp 1px bright shoulders while canceling +8/+22 neon halos).
+    - Flat cel fills (1 - edge_zone): blends 85% true-color GT + 15% APISR for color accuracy
+      without 2x2 scan noise or blue/cyan exposure drift.
+    """
+    @torch.no_grad()
+    def forward(self, hr_tensor: torch.Tensor):
+        device = hr_tensor.device
+        self._lazy_init_session(device)
+        if self.torch_teacher is None and self.ort_sess is None:
+            return self.fallback_builder(hr_tensor)
+
+        dtype = hr_tensor.dtype
+        gt_t = hr_tensor.float()
+        lr_clean = F.avg_pool2d(gt_t, kernel_size=2, stride=2)
+
+        if self.torch_teacher is not None:
+            with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
+                ap_4x = self.torch_teacher(lr_clean).float().clamp(0.0, 1.0)
+        else:
+            lr_np = lr_clean.detach().cpu().numpy().astype('float32')
+            out_4x_np = self.ort_sess.run(None, {self.input_name: lr_np})[0]
+            ap_4x = torch.from_numpy(out_4x_np).to(device=device, dtype=torch.float32).clamp(0.0, 1.0)
+        ap_t = F.avg_pool2d(ap_4x, kernel_size=2, stride=2)
+
+        luma_w = torch.tensor([0.299, 0.587, 0.114], device=device, dtype=torch.float32).view(1, 3, 1, 1)
+        gt_y = (gt_t * luma_w).sum(dim=1, keepdim=True)
+        ap_y = (ap_t * luma_w).sum(dim=1, keepdim=True)
+
+        span_gt = F.max_pool2d(gt_y, 3, 1, 1) - (-F.max_pool2d(-gt_y, 3, 1, 1))
+        span_ap = F.max_pool2d(ap_y, 3, 1, 1) - (-F.max_pool2d(-ap_y, 3, 1, 1))
+        span_edge = torch.maximum(span_gt, span_ap)
+        # Mild dilation keeps 1px shoulder recovery crisp next to 1px hairlines without widening halo far into flats
+        edge_zone = F.max_pool2d(((span_edge - 0.028) / 0.055).clamp(0.0, 1.0), 3, 1, 1)
+
+        max3_gt_rgb = F.max_pool2d(gt_t, 3, 1, 1) + 0.002
+        ap_no_halo = torch.minimum(ap_t, max3_gt_rgb)
+        tar_b = edge_zone * ap_no_halo + (1.0 - edge_zone) * (0.85 * gt_t + 0.15 * ap_no_halo)
+        return tar_b.clamp(0.0, 1.0).to(dtype=dtype), edge_zone.to(dtype=dtype)
+
+
+class Phase23LineFlowLoss(Phase21TwinReflMasterLoss):
+    """
+    Zero-Conflict Loss for XyetherLineFlowNet:
+    Supervises every edge/stroke direction (H, V, both diagonals across s=1,2,4px) directly against
+    Zero-Halo APISR geometry without fighting blurry GT edges, while enforcing strict anti-halo ceiling
+    and multi-scale bilateral cel smoothness.
+    """
+    def _multiscale_directional_and_diag_grad(self, pred: torch.Tensor, tar: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        loss = 0.0
+        for s, w_s in [(1, 1.0), (2, 0.8), (4, 0.6)]:
+            wx = torch.maximum(w[:, :, :, s:], w[:, :, :, :-s])
+            wy = torch.maximum(w[:, :, s:, :], w[:, :, :-s, :])
+            wd1 = torch.maximum(w[:, :, s:, s:], w[:, :, :-s, :-s])
+            wd2 = torch.maximum(w[:, :, s:, :-s], w[:, :, :-s, s:])
+            loss = loss + w_s * (
+                (wx * ((pred[:, :, :, s:] - pred[:, :, :, :-s]) - (tar[:, :, :, s:] - tar[:, :, :, :-s])).abs()).mean()
+                + (wy * ((pred[:, :, s:, :] - pred[:, :, :-s, :]) - (tar[:, :, s:, :] - tar[:, :, :-s, :])).abs()).mean()
+                + 0.75 * (wd1 * ((pred[:, :, s:, s:] - pred[:, :, :-s, :-s]) - (tar[:, :, s:, s:] - tar[:, :, :-s, :-s])).abs()).mean()
+                + 0.75 * (wd2 * ((pred[:, :, s:, :-s] - pred[:, :, :-s, s:]) - (tar[:, :, s:, :-s] - tar[:, :, :-s, s:])).abs()).mean()
+            )
+        return loss
+
+    def forward(self, pred: torch.Tensor, tar_b: torch.Tensor, gt_b: torch.Tensor, lr_b: torch.Tensor, edge_zone: torch.Tensor = None):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        gt_b = gt_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode='nearest')
+        luma_w = self.luma_w.to(pred.device)
+
+        pred_y = (pred * luma_w).sum(dim=1, keepdim=True)
+        tar_y = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        gt_y = (gt_b * luma_w).sum(dim=1, keepdim=True)
+        near_y = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        pred_cr, tar_cr = pred[:, 0:1] - pred[:, 1:2], tar_b[:, 0:1] - tar_b[:, 1:2]
+        pred_cb, tar_cb = pred[:, 2:3] - pred[:, 1:2], tar_b[:, 2:3] - tar_b[:, 1:2]
+
+        with torch.no_grad():
+            if edge_zone is None:
+                span_t = F.max_pool2d(tar_y, 3, 1, 1) - (-F.max_pool2d(-tar_y, 3, 1, 1))
+                edge_zone = ((span_t - 0.025) / 0.055).clamp(0.0, 1.0)
+            else:
+                edge_zone = edge_zone.float()
+            deblur_err = (tar_b - near_b).abs().max(dim=1, keepdim=True)[0]
+            w_pix = 1.0 + 4.0 * edge_zone + 5.0 * (deblur_err / 0.12).clamp(0.0, 1.0)
+            ink_pull = (F.relu(near_y - tar_y) / 0.08).clamp(0.0, 1.0) * edge_zone
+
+        l_pix = (w_pix * (pred - tar_b).abs()).mean() + 0.8 * (w_pix * (pred_y - tar_y).abs()).mean()
+        l_ink = (ink_pull * F.relu(pred_y - tar_y)).mean() + 0.6 * (ink_pull * F.relu(pred - tar_b).mean(dim=1, keepdim=True)).mean()
+
+        l_grad = self._multiscale_directional_and_diag_grad(pred, tar_b, 0.35 + 2.65 * edge_zone)
+
+        max3_gt_rgb = F.max_pool2d(gt_b, 3, 1, 1) + 0.002
+        max3_gt_y = F.max_pool2d(gt_y, 3, 1, 1) + 0.002
+        l_halo = F.relu(pred - max3_gt_rgb).mean() + F.relu(pred_y - max3_gt_y).mean()
+
+        l_cel = (
+            self._bilateral_cel_smoothness_v2(pred, tar_b, gt_b)
+            + 1.1 * self._bilateral_cel_smoothness_v2(pred_cr, tar_cr, gt_b)
+            + 1.1 * self._bilateral_cel_smoothness_v2(pred_cb, tar_cb, gt_b)
+        )
+
+        total = 1.6 * l_pix + 2.4 * l_ink + 2.8 * l_grad + 5.0 * l_halo + 2.8 * l_cel
+        return total, {
+            'l_active': (l_pix + l_ink).item(),
+            'l_quiet': l_cel.item(),
+            'l_grad': l_grad.item(),
+            'l_halo': l_halo.item(),
+        }
+
