@@ -160,37 +160,53 @@ class AnimeOTFDataset(Dataset):
                 hr_patch = self._reflect_warm_cool_bgr(hr_patch)
         hr_patch = np.ascontiguousarray(hr_patch)
 
-        # 3. Phase 20 Dual-Regime Degradation (25% Clean/Mild LR + 75% RealBlurry & 4:2:0 JPEG LR)
+        # 3. Phase 24 Multi-Regime Anime Degradation (25% Clean/Mild + 45% Medium Web + 30% Harsh Web Q52..74)
         lr_patch = hr_patch.copy()
         lr_h = self.patch_size // 2
         lr_w = self.patch_size // 2
+        regime = random.random()
 
-        if random.random() < 0.25:
+        if regime < 0.25:
             # Clean / Mild regime
             if random.random() < 0.45:
-                lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.55)
+                lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=cv2.INTER_AREA)
             if random.random() < 0.20:
                 lr_patch = self._apply_jpeg_compression(lr_patch, q_min=88, q_max=96)
-        else:
-            # RealBlurry / 4:2:0 De-JPEG regime
-            lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.50, sigma_max=1.15)
+        elif regime < 0.70:
+            # Medium RealBlurry / 4:2:0 Web regime
+            lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.45, sigma_max=1.10)
             interp = random.choices(
                 [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC],
-                weights=[0.65, 0.20, 0.15]
+                weights=[0.60, 0.22, 0.18]
             )[0]
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
             if random.random() < 0.40:
-                lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.48)
+                lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.45)
             if random.random() < 0.85:
-                lr_patch = self._apply_jpeg_compression(lr_patch, q_min=70, q_max=92)
+                lr_patch = self._apply_jpeg_compression(lr_patch, q_min=68, q_max=92)
+        else:
+            # Harsh Compressed Web / Stream regime (kills Q62 mush & 4:2:0 dark-fill chroma bleed)
+            sx = random.uniform(0.60, 1.35)
+            sy = random.uniform(0.55, 1.30)
+            lr_patch = cv2.GaussianBlur(lr_patch, (0, 0), sigmaX=sx, sigmaY=sy)
+            interp = random.choices(
+                [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_LANCZOS4],
+                weights=[0.45, 0.25, 0.20, 0.10]
+            )[0]
+            lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
+            if random.random() < 0.40:
+                lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
+            lr_patch = self._apply_jpeg_compression(lr_patch, q_min=52, q_max=74)
+            if random.random() < 0.30:
+                lr_patch = self._apply_jpeg_compression(lr_patch, q_min=68, q_max=88)
 
         # Convert to RGB float [0, 1]
         hr_rgb = cv2.cvtColor(hr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         lr_rgb = cv2.cvtColor(lr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
-        # Subtle Sensor/Web Noise (10% chance)
-        if random.random() < 0.10:
+        # Subtle Sensor/Web Noise (15% chance)
+        if random.random() < 0.15:
             lr_rgb = self._apply_noise(lr_rgb)
 
         hr_tensor = torch.from_numpy(hr_rgb.transpose(2, 0, 1).copy())

@@ -23,6 +23,8 @@ from losses.xyether_losses import (
     ColorLuvLoss,
     Phase23LineFlowLoss,
     Phase23ZeroHaloAPISRTeacher,
+    Phase24LineFlowLoss,
+    VGGPerceptualLoss,
 )
 
 
@@ -120,7 +122,7 @@ def upload_hf_artifacts(paths, hf_token: str, hf_repo: str, subdir: str) -> None
 
 def save_checkpoint(model, ema, args, step: int, tag: str) -> str:
     os.makedirs(args.output_dir, exist_ok=True)
-    pth_path = os.path.join(args.output_dir, f"XyetherLineFlow_v23_{tag}.pth")
+    pth_path = os.path.join(args.output_dir, f"{args.model_prefix}_{tag}.pth")
     torch.save(
         {
             "params": model.state_dict(),
@@ -141,11 +143,14 @@ def save_checkpoint(model, ema, args, step: int, tag: str) -> str:
 
 def train_p23(args) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Phase 23 XyetherLineFlowNet Training | device={device} | scratch_init=True")
+    resuming = bool(args.resume_path or args.resume_url)
+    print(f"Phase {args.loss_version} XyetherLineFlowNet Training | device={device} | scratch_init={not resuming}")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
     ensure_file(args.teacher_onnx_path, args.teacher_onnx_url, "APISR.onnx teacher")
+    if args.resume_path and args.resume_url and not os.path.exists(args.resume_path):
+        ensure_file(args.resume_path, args.resume_url, "own LineFlow checkpoint")
 
     dataset = AnimeOTFDataset(data_dir=args.data_dir, patch_size=args.patch_size, repeat=40)
     dataloader = DataLoader(
@@ -168,9 +173,9 @@ def train_p23(args) -> None:
 
     if args.resume_path and os.path.exists(args.resume_path):
         ckpt = torch.load(args.resume_path, map_location=device)
-        sd = ckpt.get("params", ckpt)
-        model.load_state_dict({k.replace("module.", ""): v for k, v in sd.items()}, strict=True)
-        print(f"Resumed Phase 23 checkpoint: {args.resume_path}")
+        sd = ckpt.get("params_ema", ckpt.get("params", ckpt))
+        model.load_state_dict({k.replace("module.", ""): v.float() for k, v in sd.items()}, strict=True)
+        print(f"Resumed own LineFlow checkpoint (EMA weights): {args.resume_path}")
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Student XyetherLineFlowNet(feat={args.num_feat}, blocks={args.num_blocks}): {total_params:,} params")
@@ -179,12 +184,13 @@ def train_p23(args) -> None:
     teacher = Phase23ZeroHaloAPISRTeacher(
         onnx_path=args.teacher_onnx_path,
     ).to(device)
-    criterion = Phase23LineFlowLoss().to(device)
+    criterion = Phase24LineFlowLoss().to(device) if args.loss_version >= 24 else Phase23LineFlowLoss().to(device)
     luv_loss = ColorLuvLoss(loss_weight=args.luv_weight).to(device) if args.luv_weight > 0.0 else None
+    vgg_loss = VGGPerceptualLoss(loss_weight=args.vgg_weight).to(device) if args.vgg_weight > 0.0 else None
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr_g, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, build_lr_lambda(args.warmup_iters, args.total_iters, args.lr_g, min_lr=1e-5)
+        optimizer, build_lr_lambda(args.warmup_iters, args.total_iters, args.lr_g, min_lr=args.min_lr)
     )
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda" and args.use_amp))
     evaluator = XyetherEvaluator(device=device)
@@ -214,6 +220,10 @@ def train_p23(args) -> None:
                 l_luv = luv_loss(pred.float(), tar_b.float())
                 loss = loss + l_luv
                 metrics["l_luv"] = l_luv.item()
+            if vgg_loss is not None:
+                l_vgg = vgg_loss(pred.float(), tar_b.float())
+                loss = loss + l_vgg
+                metrics["l_vgg"] = l_vgg.item()
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -239,37 +249,42 @@ def train_p23(args) -> None:
             upload_hf_artifacts([pth_path], args.hf_token, args.hf_repo, args.hf_subdir)
 
     final_pth = save_checkpoint(model, ema, args, args.total_iters, "Final")
-    final_onnx = export_onnx(ema.ema, os.path.join(args.output_dir, "XyetherLineFlow_v23_Final.onnx"))
+    final_onnx = export_onnx(ema.ema, os.path.join(args.output_dir, f"{args.model_prefix}_Final.onnx"))
     final_rep = evaluator.evaluate_model(ema.ema, test_images=test_images)
     print(f"  [Final Eval] {final_rep}")
     upload_hf_artifacts([final_pth, final_onnx], args.hf_token, args.hf_repo, args.hf_subdir)
-    print("Phase 23 Training Complete!")
+    print(f"Phase {args.loss_version} Training Complete!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Phase 23 XyetherLineFlowNet from Scratch")
+    parser = argparse.ArgumentParser(description="Train Phase 23/24 XyetherLineFlowNet")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K")
     parser.add_argument("--resume_path", type=str, default="")
+    parser.add_argument("--resume_url", type=str, default="")
     parser.add_argument("--teacher_onnx_path", type=str, default="./reference_models/Model/APISR.onnx")
     parser.add_argument("--teacher_onnx_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/teachers/APISR.onnx")
-    parser.add_argument("--output_dir", type=str, default="./output_models_phase23")
+    parser.add_argument("--output_dir", type=str, default="./output_models_phase24")
+    parser.add_argument("--model_prefix", type=str, default="XyetherLineFlow_v24")
+    parser.add_argument("--loss_version", type=int, default=24)
     parser.add_argument("--num_feat", type=int, default=56)
     parser.add_argument("--num_blocks", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=12)
     parser.add_argument("--patch_size", type=int, default=160)
-    parser.add_argument("--total_iters", type=int, default=6000)
+    parser.add_argument("--total_iters", type=int, default=7500)
     parser.add_argument("--warmup_iters", type=int, default=200)
-    parser.add_argument("--lr_g", type=float, default=3.5e-4)
+    parser.add_argument("--lr_g", type=float, default=1.6e-4)
+    parser.add_argument("--min_lr", type=float, default=5e-6)
     parser.add_argument("--luv_weight", type=float, default=0.25)
-    parser.add_argument("--ema_decay", type=float, default=0.999)
+    parser.add_argument("--vgg_weight", type=float, default=0.05)
+    parser.add_argument("--ema_decay", type=float, default=0.9992)
     parser.add_argument("--use_amp", action="store_true", default=True)
     parser.add_argument("--no_amp", dest="use_amp", action="store_false")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--eval_every", type=int, default=1000)
-    parser.add_argument("--save_every", type=int, default=1500)
+    parser.add_argument("--save_every", type=int, default=2500)
     parser.add_argument("--hf_token", type=str, default=os.environ.get("HF_TOKEN", ""))
     parser.add_argument("--hf_repo", type=str, default="Thanawanit/Kaggle-Backup")
-    parser.add_argument("--hf_subdir", type=str, default="checkpoints/Phase23_XyetherLineFlow_v1")
+    parser.add_argument("--hf_subdir", type=str, default="checkpoints/Phase24_XyetherLineFlow_v2")
     args = parser.parse_args()
     train_p23(args)

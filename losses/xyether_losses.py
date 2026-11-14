@@ -1295,3 +1295,83 @@ class Phase23LineFlowLoss(Phase21TwinReflMasterLoss):
             'l_halo': l_halo.item(),
         }
 
+
+class Phase24LineFlowLoss(Phase23LineFlowLoss):
+    """
+    Phase 24 Upgraded Zero-Halo Line-Flow Loss:
+    1. Symmetric Bright-Shoulder Recovery (`l_sh`): eliminates greyed-out shoulders next to blurred 1px hairlines.
+    2. Teacher-Aware Bilateral Edge Barrier (`barrier_ref`): stops cel smoothness strictly at crisp APISR edges.
+    3. Strict-Edge 3x3 Laplacian Match (`l_lap`): eliminates soft mush under heavy Q52..74 web compression.
+    4. Multi-Scale (1x1 edge + 4x4 & 8x8 block) De-4:2:0 Opponent-Chroma Loss (`l_chr`): cures brownish/reddish
+       JPEG 4:2:0 chroma bleed inside dark fills and borders while keeping flat cel areas noise-free.
+    """
+    def __init__(self):
+        super().__init__()
+        self.register_buffer(
+            'lap_k',
+            torch.tensor([[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]], dtype=torch.float32).view(1, 1, 3, 3),
+        )
+
+    def forward(self, pred: torch.Tensor, tar_b: torch.Tensor, gt_b: torch.Tensor, lr_b: torch.Tensor, edge_zone: torch.Tensor = None):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        gt_b = gt_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode='nearest')
+        luma_w = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+
+        pred_y = (pred * luma_w).sum(dim=1, keepdim=True)
+        tar_y = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        gt_y = (gt_b * luma_w).sum(dim=1, keepdim=True)
+        near_y = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        pred_cr, tar_cr = pred[:, 0:1] - pred[:, 1:2], tar_b[:, 0:1] - tar_b[:, 1:2]
+        pred_cb, tar_cb = pred[:, 2:3] - pred[:, 1:2], tar_b[:, 2:3] - tar_b[:, 1:2]
+
+        with torch.no_grad():
+            if edge_zone is None:
+                span_t = F.max_pool2d(tar_y, 3, 1, 1) - (-F.max_pool2d(-tar_y, 3, 1, 1))
+                edge_zone = ((span_t - 0.025) / 0.055).clamp(0.0, 1.0)
+            else:
+                edge_zone = edge_zone.float()
+            deblur_err = (tar_b - near_b).abs().max(dim=1, keepdim=True)[0]
+            w_pix = 1.0 + 4.5 * edge_zone + 5.5 * (deblur_err / 0.12).clamp(0.0, 1.0)
+            ink_pull = (F.relu(near_y - tar_y) / 0.08).clamp(0.0, 1.0) * edge_zone
+            sh_pull = (F.relu(tar_y - near_y) / 0.08).clamp(0.0, 1.0) * edge_zone
+            edge_strict = (edge_zone > 0.30).float()
+            edge_dil5 = F.max_pool2d(edge_zone, 5, 1, 2)
+
+        l_pix = (w_pix * (pred - tar_b).abs()).mean() + 0.8 * (w_pix * (pred_y - tar_y).abs()).mean()
+        l_ink = (ink_pull * F.relu(pred_y - tar_y)).mean() + 0.6 * (ink_pull * F.relu(pred - tar_b).mean(dim=1, keepdim=True)).mean()
+        l_sh = (sh_pull * F.relu(tar_y - pred_y)).mean() + 0.6 * (sh_pull * F.relu(tar_b - pred).mean(dim=1, keepdim=True)).mean()
+        l_grad = self._multiscale_directional_and_diag_grad(pred, tar_b, 0.25 + 3.0 * edge_zone)
+        l_lap = (edge_strict * (F.conv2d(pred_y, lap_k, padding=1) - F.conv2d(tar_y, lap_k, padding=1)).abs()).mean()
+
+        l_chr = (
+            (edge_dil5 * ((pred_cr - tar_cr).abs() + (pred_cb - tar_cb).abs())).mean()
+            + 0.9 * (F.avg_pool2d(pred_cr, 4, 4) - F.avg_pool2d(tar_cr, 4, 4)).abs().mean()
+            + 0.9 * (F.avg_pool2d(pred_cb, 4, 4) - F.avg_pool2d(tar_cb, 4, 4)).abs().mean()
+            + 0.7 * (F.avg_pool2d(pred_cr, 8, 8) - F.avg_pool2d(tar_cr, 8, 8)).abs().mean()
+            + 0.7 * (F.avg_pool2d(pred_cb, 8, 8) - F.avg_pool2d(tar_cb, 8, 8)).abs().mean()
+        )
+
+        max3_gt_rgb = F.max_pool2d(gt_b, 3, 1, 1) + 0.002
+        max3_gt_y = F.max_pool2d(gt_y, 3, 1, 1) + 0.002
+        l_halo = F.relu(pred - max3_gt_rgb).mean() + F.relu(pred_y - max3_gt_y).mean()
+
+        barrier_ref = edge_zone * tar_b + (1.0 - edge_zone) * gt_b
+        l_cel = (
+            self._bilateral_cel_smoothness_v2(pred, tar_b, barrier_ref)
+            + 1.35 * self._bilateral_cel_smoothness_v2(pred_cr, tar_cr, barrier_ref)
+            + 1.35 * self._bilateral_cel_smoothness_v2(pred_cb, tar_cb, barrier_ref)
+        )
+
+        total = 1.6 * l_pix + 2.6 * l_ink + 2.1 * l_sh + 3.0 * l_grad + 1.4 * l_lap + 1.5 * l_chr + 5.5 * l_halo + 3.4 * l_cel
+        return total, {
+            'l_active': (l_pix + l_ink + l_sh).item(),
+            'l_quiet': l_cel.item(),
+            'l_grad': (l_grad + 0.45 * l_lap).item(),
+            'l_chr': l_chr.item(),
+            'l_halo': l_halo.item(),
+        }
+
