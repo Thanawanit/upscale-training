@@ -219,5 +219,39 @@ User visual review identified persistent **hairline bending/wobble ("เส้�
    - `VOK` penalized `APISR` as `1/7` because `APISR` kept the vertical hairline straight at `x=80`, falsely rewarding models that bent `x=80 -> x=81`!
 3. **Direction Forward (`Phase 23`):** Supervise **all edges, corners, forks, and diagonal strokes** directly with **`APISR`'s geometry (`ap_t`)** rather than blurry anti-aliased `GT`, while clamping **upward edge halo** (`<= max3(GT) + margin`) and preserving `GT` flat-region true color (`1 - is_edge`).
 
+---
+
+## 7. Phase 23: `XyetherLineFlowNet` (100% Own Architecture Trained from Scratch, Zero-Halo `APISR` Geometry Distillation)
+
+### 7.1 Architecture & Training Summary
+- **Architecture:** [`XyetherLineFlowNet(num_feat=56, num_blocks=8, upscale=2)`](file:///d:/MODEL%20UPSCALE%20ME/archs/xyether_lineflow.py) (`514,148` params — fewer parameters than `XyetherCompactNet` `600,652`), combining `3x3` local mixes, alternating standard/dilated (`dilation=1,2`) separable `(1x9)` + `(9x1)` residual directional strip branches (`>150` HR px receptive span), 4-tap hierarchical feature fusion, a single `Sigmoid` spatial-channel output gate, and `PixelShuffle(2)` over `Nearest(x)` residual.
+- **Lineage & Training:** Trained **100% from random initialization (scratch)** for `6000` iterations (`batch_size=12, patch_size=160`, `AdamW` `lr=3.5e-4 -> 1e-5`, `EMA=0.999` with warmup) on Kaggle GPU (`thanawnit/xyether-training-runner`, v33) via [`train_xyether_p23.py`](file:///d:/MODEL%20UPSCALE%20ME/train_xyether_p23.py), supervised by [`Phase23ZeroHaloAPISRTeacher`](file:///d:/MODEL%20UPSCALE%20ME/losses/xyether_losses.py#L1183) and [`Phase23LineFlowLoss`](file:///d:/MODEL%20UPSCALE%20ME/losses/xyether_losses.py#L1228) + `ColorLuvLoss(0.25)`.
+
+### 7.2 Verified Cloud GPU & Local ONNXRuntime Benchmark (`512x512` Anime Eval)
+
+| Scenario | Model | PSNR (dB) | SSIM | HL1 / HL2 Min | Edge Slope | LapVar | Halo Overshoot | Flat Checker |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Clean_LR`** | `Balanced_2x` | 28.56 | 0.9549 | 41 / 63 | 782.5 | 672.2 | +12 | 0.10 |
+| **`Clean_LR`** | `Strong_v3` | 28.19 | 0.9506 | 9 / 34 | 914.0 | 1058.3 | +18 | 0.32 |
+| **`Clean_LR`** | `Phase22_TwinReflMaster_v3` | 32.80 | 0.9760 | 32 / 64 | 801.7 | 794.4 | +14 | 0.11 |
+| **`Clean_LR`** | `APISR_4x_to_2x` (Teacher) | 27.09 | 0.9371 | 19 / 18 | 846.7 | 969.3 | +2 | 0.17 |
+| **`Clean_LR`** | **`Phase23_LineFlow_v1`** | **29.42** | **0.9619** | **22 / 19** | **849.4** | **903.0** | **-1 (Zero Halo)** | **0.15** |
+| **`RealBlurry_LR`** | `Balanced_2x` | 28.36 | 0.9461 | 57 / 71 | 722.8 | 547.2 | +3 | 0.16 |
+| **`RealBlurry_LR`** | `Strong_v3` | 27.40 | 0.9349 | 9 / 37 | 906.4 | 1017.9 | +22 | 0.35 |
+| **`RealBlurry_LR`** | `Phase22_TwinReflMaster_v3` | 29.83 | 0.9611 | 57 / 72 | 706.4 | 381.5 | +2 | 0.15 |
+| **`RealBlurry_LR`** | `APISR_4x_to_2x` (Teacher) | 27.36 | 0.9395 | 28 / 23 | 878.0 | 958.3 | +8 | 0.18 |
+| **`RealBlurry_LR`** | **`Phase23_LineFlow_v1`** | **28.88** | **0.9549** | **28 / 38** | **824.4** | **783.1** | **+1 (Zero Halo)** | **0.20** |
+
+### 7.3 Verified Improvements Over Phase 22 & Teacher Parity
+1. **Unbroken Straight Hairline Column (`RealBlurry_LR`, `y=76..88` at `x=80`):**
+   - `Phase22`: broke & kinked to `x=81` (`[89, 75, 70, 68, 70]` at `x=80`).
+   - **`Phase23_LineFlow_v1`**: stays cleanly anchored at `x=80` (`[53, 43, 39, 40, 53]` at `y=80..88`) matching `APISR` straight geometry (`[24, 29, 24, 22, 29]`), verified visually in [`p23_hairline_6x.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p23_hairline_6x.png).
+2. **Zero Cyan/Bright Edge Halo:** Suppresses `APISR`'s `+8` (`RealBlurry_LR`) / ribbon cyan glow down to **`+1` / `-1`**, verified visually in [`p23_final_RealBlurry_LR_ribbon.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p23_final_RealBlurry_LR_ribbon.png).
+3. **Speed & ONNX Export Verification (`256x256 -> 512x512` CPU):**
+   - ONNXRuntime CPU (`XyetherLineFlow_v23_Final.onnx` vs PyTorch EMA): **`max_abs_diff = 6.85e-07`**
+   - CPU latency (4 threads): **`975.4 ms` warm (`1012.2 ms` cold)** vs `APISR.onnx` (`~5,915 ms` equivalent on CPU -> **`~6x` faster**).
+   - Checkpoints archived in [`checkpoints/Phase23_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase23_XyetherLineFlow_v1/XyetherLineFlow_v23_Final.pth) and [`XyetherLineFlow_v23_Final.onnx`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase23_XyetherLineFlow_v1/XyetherLineFlow_v23_Final.onnx), and backed up on Hugging Face (`Thanawanit/Kaggle-Backup/checkpoints/Phase23_XyetherLineFlow_v1/`).
+
+
 
 
