@@ -733,8 +733,9 @@ class LumaGuidedAPISRTeacher(nn.Module):
         if device.type == 'cuda':
             try:
                 import onnx
+                from onnx import shape_inference
                 from onnx2torch import convert
-                onnx_model = onnx.load(self.onnx_path)
+                onnx_model = shape_inference.infer_shapes(onnx.load(self.onnx_path))
                 t_mod = convert(onnx_model).eval().to(device)
                 for p in t_mod.parameters():
                     p.requires_grad = False
@@ -749,6 +750,13 @@ class LumaGuidedAPISRTeacher(nn.Module):
 
         try:
             import onnxruntime as ort
+            if device.type == 'cuda' and hasattr(ort, 'preload_dlls'):
+                try:
+                    ort.preload_dlls(cuda=True, cudnn=True)
+                except TypeError:
+                    ort.preload_dlls()
+                except Exception as pre_e:
+                    print(f"[APISR TEACHER] ort.preload_dlls warning: {pre_e}", flush=True)
             avail = ort.get_available_providers()
             providers = []
             if device.type == 'cuda' and 'CUDAExecutionProvider' in avail:
@@ -758,7 +766,10 @@ class LumaGuidedAPISRTeacher(nn.Module):
             sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             self.ort_sess = ort.InferenceSession(self.onnx_path, sess_options=sess_opts, providers=providers)
             self.input_name = self.ort_sess.get_inputs()[0].name
-            print(f"[APISR TEACHER] Loaded APISR.onnx with providers: {self.ort_sess.get_providers()}", flush=True)
+            active_providers = self.ort_sess.get_providers()
+            print(f"[APISR TEACHER] Loaded APISR.onnx with providers: {active_providers}", flush=True)
+            if device.type == 'cuda' and 'CUDAExecutionProvider' not in active_providers:
+                print("[WARN] CUDA requested but APISR teacher fell back to CPUExecutionProvider; training will be slow!", flush=True)
         except Exception as e:
             print(f"[WARN] Could not load APISR.onnx via onnxruntime ({e}); using analytical fallback.", flush=True)
             self.ort_sess = None

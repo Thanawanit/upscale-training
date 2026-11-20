@@ -250,7 +250,20 @@ User visual review identified persistent **hairline bending/wobble ("เส้�
 3. **Speed & ONNX Export Verification (`256x256 -> 512x512` CPU):**
    - ONNXRuntime CPU (`XyetherLineFlow_v23_Final.onnx` vs PyTorch EMA): **`max_abs_diff = 6.85e-07`**
    - CPU latency (4 threads): **`975.4 ms` warm (`1012.2 ms` cold)** vs `APISR.onnx` (`~5,915 ms` equivalent on CPU -> **`~6x` faster**).
-   - Checkpoints archived in [`checkpoints/Phase23_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase23_XyetherLineFlow_v1/XyetherLineFlow_v23_Final.pth) and [`XyetherLineFlow_v23_Final.onnx`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase23_XyetherLineFlow_v1/XyetherLineFlow_v23_Final.onnx), and backed up on Hugging Face (`Thanawanit/Kaggle-Backup/checkpoints/Phase23_XyetherLineFlow_v1/`).
+   - Checkpoints archived in [`checkpoints/Phase23_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase23_XyetherLineFlow_v1/XyetherLineFlow_v23_Final.pth) and [`XyetherLineFlow_v23_Final.onnx`](file:///d:/MODEL%20UPSCALE ME/checkpoints/Phase23_XyetherLineFlow_v1/XyetherLineFlow_v23_Final.onnx), and backed up on Hugging Face (`Thanawanit/Kaggle-Backup/checkpoints/Phase23_XyetherLineFlow_v1/`).
+
+---
+
+## 8. Phase 24 (`XyetherLineFlow_v24`) — Execution & GPU Teacher Root-Cause Fix
+
+### 8.1 Kaggle v35 12h Timeout Root Cause (`CPUExecutionProvider` Fallback)
+- **Observed Failure (v34 & v35):** `v34` was cancelled in queue (`KernelWorkerStatus.CANCEL_ACKNOWLEDGED`). `v35` ran `43,063s` (~11.96h) cleanly through step **`6300 / 7500`** before hitting Kaggle's 12-hour wall-clock limit (`CANCEL_ACKNOWLEDGED`, `loss=2.9870`, `l_halo=0.0023` at step `6300`).
+- **Root Cause (`onnxruntime-gpu >= 1.27` vs Kaggle CUDA 12):** Unpinned `pip install onnxruntime-gpu` pulled CUDA 13 ONNX Runtime, failing on Kaggle T4 with `libcublasLt.so.13: cannot open shared object file` (`Require cuDNN 9.* and CUDA 13.*`), while `onnx2torch` raised `Average pool operation with spatial rank == -2`. As a result, `APISR.onnx` teacher silently fell back to **`CPUExecutionProvider`** (`~6.8 s/iter`), pushing 7,500 iterations past 12 hours (~14.1h).
+- **Fix Applied:**
+  1. [`Kaggle_Xyether_Training.ipynb`](file:///d:/MODEL%20UPSCALE%20ME/Kaggle_Xyether_Training.ipynb): Detect `torch.version.cuda` and pin **`onnxruntime-gpu==1.23.2`** for CUDA 12 environments, call `ort.preload_dlls(cuda=True, cudnn=True)`, and verify active `APISR.onnx` providers right after download.
+  2. [`losses/xyether_losses.py`](file:///d:/MODEL%20UPSCALE%20ME/losses/xyether_losses.py): Run `onnx.shape_inference.infer_shapes` before `onnx2torch.convert` and invoke `ort.preload_dlls` before `InferenceSession` on CUDA, logging an explicit warning if `CPUExecutionProvider` fallback occurs.
+  3. [`train_xyether_p23.py`](file:///d:/MODEL%20UPSCALE%20ME/train_xyether_p23.py): Enabled `persistent_workers=(args.num_workers > 0)` on `DataLoader`.
+
 
 
 

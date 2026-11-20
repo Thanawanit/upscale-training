@@ -159,6 +159,7 @@ def train_p23(args) -> None:
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
+        persistent_workers=(args.num_workers > 0),
         drop_last=True,
     )
     test_images = [p for p in Path(args.data_dir).glob("*") if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}][:5]
