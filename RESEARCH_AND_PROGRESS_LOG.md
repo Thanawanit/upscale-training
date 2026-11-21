@@ -388,6 +388,82 @@ Starting from `XyetherLineFlow_v24_Final.pth`, 100 local continuation steps with
    - CPU latency: **`776.8 ms` warm / `838.1 ms` cold** (~**7.6x faster** than `APISR.onnx` CPU `~5,915 ms`).
    - Checkpoints archived in [`checkpoints/Phase25_XyetherLineFlow_v3/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase25_XyetherLineFlow_v3/XyetherLineFlow_v25_Final.pth), [`XyetherLineFlow_v25_Final.onnx`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase25_XyetherLineFlow_v3/XyetherLineFlow_v25_Final.onnx), and backed up on Hugging Face (`Thanawanit/Kaggle-Backup/checkpoints/Phase25_XyetherLineFlow_v3/`).
 
+---
+
+## 11. User Real-World 3-Scene Diagnostic (`model_comparison_result*.png`) & Phase 26 Root-Cause Discovery
+
+### 11.1 Contrast-Band Decomposition & Why `v24`/`v25` Look Identical on Main Outlines Yet Differ from `APISR`/`Strong_v3` on Hair Flare & Subtle Details ([`deep_probe_flare_and_blending.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/deep_probe_flare_and_blending.py))
+
+Across the user's 3 real-world comparison images (`img0_sunlight`: `model_comparison_result.png`, `img1_dark_hall`: `model_comparison_result (1).png`, `img3_hair_flare`: `model_comparison_result (3).png`), each `697x697` panel was decomposed into 3 contrast regimes by local `3x3` RGB span:
+- **Flat/Gradient Surfaces (`span < 4` RGB levels):** `52.5%` (`img0`), `66.1%` (`img1`), `71.9%` (`img3`)
+- **Low-Contrast Micro-Details (`4 <= span < 22` RGB levels — internal dark hair strands inside light flares, bangs creases, flare transition borders, pastel cheek blush lines):** `22.9%` (`img0`), `18.3%` (`img1`), `15.9%` (`img3`)
+- **High-Contrast Main Ink Outlines (`span >= 35` RGB levels — outer silhouettes, eyes, mouth, collar):** `13.2%` (`img0`), `7.9%` (`img1`), `5.1%` (`img3`)
+
+| Scene | Model | Low-Contrast (`4..22` lv) Lap / Grad | High-Contrast (`>=35` lv) Lap / Grad | Pixel Diff vs `v25` (`>=4` lv %) | Pixel Diff vs `APISR` (`>=4` lv %) |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`img0_sunlight`** | `Original` | 3.74 / 1.54 | 70.45 / 26.80 | — | — |
+| **`img0_sunlight`** | `LineFlow_v24` | 3.71 / 1.66 | 100.39 / 34.47 | 8.1% (MAE 1.24) | — |
+| **`img0_sunlight`** | **`LineFlow_v25`** | **3.32 / 1.62** | **101.15 / 34.72** | 0.0% | **34.3% (MAE 3.84)** |
+| **`img0_sunlight`** | `Strong_v3` | **4.40 / 1.78** | 101.83 / 34.67 | — | 23.0% (MAE 2.75) |
+| **`img0_sunlight`** | `APISR` | **4.09 / 1.72** | **106.25 / 35.56** | — | 0.0% |
+| **`img1_dark_hall`** | `Original` | 3.92 / 1.48 | 63.62 / 23.16 | — | — |
+| **`img1_dark_hall`** | `LineFlow_v24` | 4.10 / 1.62 | 83.22 / 27.60 | 7.3% (MAE 1.01) | — |
+| **`img1_dark_hall`** | **`LineFlow_v25`** | **3.73 / 1.57** | **84.80 / 28.04** | 0.0% | **21.6% (MAE 2.52)** |
+| **`img1_dark_hall`** | `Strong_v3` | **5.69 / 1.85** | 88.04 / 28.59 | — | 16.5% (MAE 1.98) |
+| **`img1_dark_hall`** | `APISR` | **4.99 / 1.74** | **91.97 / 29.27** | — | 0.0% |
+| **`img3_hair_flare`** | `Original` | 2.66 / 1.26 | 36.40 / 17.56 | — | — |
+| **`img3_hair_flare`** | `LineFlow_v24` | 2.24 / 1.15 | 79.15 / 26.86 | **0.5% (MAE 0.21)** | — |
+| **`img3_hair_flare`** | **`LineFlow_v25`** | **2.35 / 1.17** | **79.43 / 26.94** | 0.0% | **24.5% (MAE 2.52)** |
+| **`img3_hair_flare`** | `Strong_v3` | **3.62 / 1.50** | 85.22 / 28.59 | — | 13.7% (MAE 1.81) |
+| **`img3_hair_flare`** | `APISR` | **3.56 / 1.51** | **84.48 / 28.45** | — | 0.0% |
+
+### 11.2 Two Architectural / Loss Root Causes Discovered in `losses/xyether_losses.py`
+
+1. **Root Cause 1 — `0.85 * gt_t` Non-Edge Teacher Dilution Blocking `APISR`'s Dominant Base-Color Consolidation (`Phase23ZeroHaloAPISRTeacher` line 1239):**
+   - In `img3_hair_flare`, a warm golden light flare splashes across the character's dark charcoal hair (`y=20..140`).
+   - Both **`APISR`** and **`Strong_v3`** perform **Bilateral Color Mode Consolidation**: they raise the cool Blue channel (`B: 87.7 -> 89.1` in `APISR`, `88.2` in `Strong_v3`) and pull down the warm Red/Green flare haze across every vertical band, reducing `HSV Saturation` by **`11%–22%`** across the hair zones (`Zone3_RightHairFlare Sat: Original 47.4 -> Strong_v3 44.1 -> APISR 42.2`; `Zone2_MidBangsFlare Sat: 23.3 -> 19.1 -> 18.1`; `Zone4_LowerDarkHair Sat: 31.7 -> 27.9 -> 24.9`) and reducing warm excess `Warm(0.5*(R+G)-B)` from `15.06 -> 13.18` (`Strong_v3: 13.90`). This consolidates the diffuse multi-ring yellow gradient into a clean anime cel-highlight band while pulling the transition region back to the **dominant dark hair base color**.
+   - In [`losses/xyether_losses.py`](file:///d:/MODEL%20UPSCALE%20ME/losses/xyether_losses.py) line 1239:
+     ```python
+     tar_b = edge_zone * ap_no_halo + (1.0 - edge_zone) * (0.85 * gt_t + 0.15 * ap_no_halo)
+     ```
+     Because `edge_zone` is `0.0` across all hair/skin surfaces and soft gradients (`85%` of pixels), our teacher target (`Old_Teacher_Tar`) discarded **85% of `APISR`'s color consolidation** (`Old_Teacher_Tar Sat = 45.7, Warm = 14.49`) and forced `LineFlow_v24/v25` to reproduce raw `gt_t` (`LineFlow_v25 Sat = 47.0, Warm = 14.65`).
+
+2. **Root Cause 2 — Low-Contrast Detail Crusher in `_bilateral_cel_smoothness_v2` & `edge_strict` (`losses/xyether_losses.py` lines 1029–1043 & 1430):**
+   - In `_bilateral_cel_smoothness_v2`, `w_gradual = ((0.095 - path_span) / 0.055).clamp(0, 1)` applied `13x13` (`s=1,2,4,6`) bilateral smoothing to every structure below **`24.2` RGB levels (`0.095 * 255`)**, and `w_strict_flat = (path_span < 0.038)` (`9.7` RGB levels) penalized `F.relu(dx_p.abs() - 0.80 * dx_t.abs())` — **explicitly forcing the student's gradients to be at least 20% weaker than the target on all `< 10` RGB-level micro-lines**.
+   - Simultaneously, `edge_strict = (edge_zone > 0.28)` (`> 10.6` RGB levels) disabled `l_lap` and `l_span` on subtle features.
+   - As a result, `LineFlow_v24` and `v25` blurred out:
+     - **Internal dark hair shadow strands inside the light flare (`TopLeft_Flare_Strands`):** `Original Grad1px = 0.46`, `APISR = 0.54`, `Strong_v3 = 0.48`, vs **`LineFlow_v24/v25 = 0.29` (`-37%` blurrier than Original)**.
+     - **Horizontal hair crease line inside middle bangs (`MidBangs_Flare_Edge`)** ([`user_img3_hotspot_analysis.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/user_img3_hotspot_analysis.png) Row 3).
+     - **4 pastel pink diagonal cheek blush lines (`Cheek_Blush_Lines`, `4..11` RGB levels):** `Original Grad1px = 0.45`, `APISR = 0.54`, `Strong_v3 = 0.62`, vs **`LineFlow_v25 = 0.32` (`-41%` softer than APISR)**.
+
+### 11.3 Verified Phase 26 Prototype Fix at Both Full-Panel (`verify_flare_and_lowcontrast_fix.py`) and Native 2x (`160x160 -> 320x320`, `test_native_scale_flare_and_blending.py`)
+
+By replacing `0.85 * gt_t` non-edge dilution with **Full-Field Zero-Halo APISR Target (`strong_edge * ap_clamped + (1 - strong_edge) * ap_b`)**, lowering `_bilateral_cel_smoothness_v3` threshold from `24.2 -> 7.1` RGB levels (`0.095 -> 0.028`) with zero `0.80x` gradient suppression, and adding **Relative Micro-Contrast Booster (`w_micro_boost`)** for `3..28` RGB-level micro-lines ([`user_img3_native2x_p26_proof.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/user_img3_native2x_p26_proof.png)):
+
+| Native 2x Region (`160x160 -> 320x320`) | Model | Warm Excess (`RG-B`) | Saturation (`HSV S`) | Micro-Edge `Grad1px` | `MAE vs APISR_2x` |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`TopRight_HairFlare`** | `Original_2x` | 11.96 | 41.9 | 1.38 | 4.95 |
+| **`TopRight_HairFlare`** | `LineFlow_v25` | 11.67 | 41.3 | 2.00 | 3.08 |
+| **`TopRight_HairFlare`** | **`P26_Fixed_Proto`** | **10.47** | **37.0** | **1.94** | **2.38** |
+| **`TopRight_HairFlare`** | `Strong_v3` | 11.22 | 38.8 | 2.68 | 2.44 |
+| **`TopRight_HairFlare`** | `APISR_2x` | **10.42** | **36.4** | **2.39** | 0.00 |
+| **`TopLeft_HairStrands`** | `Original_2x` | -6.07 | 36.7 | 0.39 | 2.54 |
+| **`TopLeft_HairStrands`** | `LineFlow_v25` | -5.73 | 35.5 | 0.42 | 2.32 |
+| **`TopLeft_HairStrands`** | **`P26_Fixed_Proto`** | **-5.43** | **31.4** | **0.54 (+28.6%)** | **1.41 (-39%)** |
+| **`TopLeft_HairStrands`** | `Strong_v3` | -5.83 | 31.8 | 0.86 | 1.74 |
+| **`TopLeft_HairStrands`** | `APISR_2x` | **-5.28** | **30.8** | **0.82** | 0.00 |
+| **`MidBangs_LightEdge`** | `Original_2x` | -1.04 | 27.0 | 1.02 | 4.07 |
+| **`MidBangs_LightEdge`** | `LineFlow_v25` | -0.88 | 26.1 | 1.46 | 2.66 |
+| **`MidBangs_LightEdge`** | **`P26_Fixed_Proto`** | **-1.13** | **22.6** | **1.47** | **1.80 (-32%)** |
+| **`MidBangs_LightEdge`** | `Strong_v3` | -1.08 | 23.9 | 1.94 | 2.13 |
+| **`MidBangs_LightEdge`** | `APISR_2x` | **-1.10** | **21.2** | **1.76** | 0.00 |
+| **`Cheek_BlushLines`** | `Original_2x` | 21.23 | 37.5 | 0.38 | 1.85 |
+| **`Cheek_BlushLines`** | `LineFlow_v25` | 21.91 | 39.0 | 0.31 | 1.55 |
+| **`Cheek_BlushLines`** | **`P26_Fixed_Proto`** | **19.28** | **35.9** | **0.51 (+64.5%)** | **1.04 (-33%)** |
+| **`Cheek_BlushLines`** | `Strong_v3` | 23.23 | 39.3 | 1.23 | 1.88 |
+| **`Cheek_BlushLines`** | `APISR_2x` | **20.02** | **36.2** | **0.55** | 0.00 |
+
+
 
 
 
