@@ -296,6 +296,47 @@ User visual review identified persistent **hairline bending/wobble ("เส้�
   - CPU latency: **`741.7 ms` warm** (`1491.3 ms` cold) — ~**8x faster** than `APISR.onnx` CPU (`~5,915 ms`).
 - **Artifacts:** Archived in [`checkpoints/Phase24_XyetherLineFlow_v2/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase24_XyetherLineFlow_v2/XyetherLineFlow_v24_Final.pth), [`XyetherLineFlow_v24_Final.onnx`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase24_XyetherLineFlow_v2/XyetherLineFlow_v24_Final.onnx), and backed up on Hugging Face (`Thanawanit/Kaggle-Backup/checkpoints/Phase24_XyetherLineFlow_v2/`).
 
+---
+
+## 9. Pre-Phase 25 Study — APISR (CVPR 2024) Deep Dive & 2020+ Modern Anime Empirical Audit
+
+### 9.1 Key Takeaways from APISR (CVPR 2024) Architecture & Methodology
+1. **Shuffled Resize & Prediction-Oriented Multi-Codec Compression:** Real-world anime streams undergo multi-stage scaling and intra-prediction block codecs (H.264/HEVC/WebP) in arbitrary orders ($\pi(\text{Resize}, \text{Blur}, \text{Noise}, \text{Compression})$). Training exclusively on fixed `Blur -> Resize(0.5x) -> JPEG` causes sharpness drop when compression precedes or interleaves with resizing (`shuffled_reencode`).
+2. **XDoG Hand-Drawn Line Enhancement & Narrow-Gap Separation:** APISR uses Extended Difference of Gaussians (XDoG) with outlier filtering to isolate hand-drawn strokes and prevent close parallel strokes from merging under heavy compression.
+3. **Balanced Perceptual & Color Fidelity:** Avoiding color bleeding in flat/dark cel shading while preserving crisp line troughs requires balancing perceptual structure against domain-accurate chrominance.
+
+### 9.2 2020+ Era Modern Anime Benchmark (`5` High-Res 2020–2025 Frames, `3` Degradations)
+Evaluated via [`study_2020plus_and_apisr.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/study_2020plus_and_apisr.py) across `anime2020_1_id7306078.png`..`anime2020_5_id7294435.png` under `stream_1080p` (`Q=80`), `harsh_q62_420` (`Q=62`), and `shuffled_reencode` (`Resize(360) -> JPEG(72) -> AnisoBlur -> Resize(256, CUBIC) -> WebP(68)`), visualized in [`study_2020plus_anime_vs_apisr.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/study_2020plus_anime_vs_apisr.png):
+
+| Degradation Regime | Model | PSNR (dB) | SSIM | LapVar | XDoG LineSpan | InkShallow | Halo99.9 | ChrMAE | DarkChrMAE |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`stream_1080p`** | `Phase23_v1` | 26.56 | 0.9052 | 1744.8 | 125.7% | +0.09 | 14.4 | 1.51 | 2.40 |
+| **`stream_1080p`** | **`Phase24_v2`** | **26.58** | **0.9009** | **1791.7** | **125.8%** | **+0.10** | **13.6** | **1.42** | **2.23** |
+| **`stream_1080p`** | `APISR_4x_to_2x` | 25.70 | 0.8833 | 2004.2 | 120.9% | +0.14 | 31.8 | 1.69 | 1.94 |
+| **`harsh_q62_420`** | `Phase23_v1` | 26.30 | 0.8985 | 1523.8 | 120.6% | +0.21 | 16.6 | 1.76 | 3.01 |
+| **`harsh_q62_420`** | **`Phase24_v2`** | **26.38** | **0.8969** | **1600.4** | **122.0%** | **+0.22** | **15.4** | **1.62** | **2.80** |
+| **`harsh_q62_420`** | `APISR_4x_to_2x` | 25.36 | 0.8786 | 1922.8 | 117.1% | +0.26 | 33.4 | 1.79 | 2.27 |
+| **`shuffled_reencode`** | `Phase23_v1` | 26.28 | 0.8923 | 1522.6 | 118.0% | +0.25 | 14.6 | 1.72 | 2.91 |
+| **`shuffled_reencode`** | **`Phase24_v2`** | **26.33** | **0.8913** | **1582.6** | **118.6%** | **+0.27** | **13.6** | **1.57** | **2.70** |
+| **`shuffled_reencode`** | `APISR_4x_to_2x` | 25.20 | 0.8745 | 1918.1 | 114.6% | +0.35 | 32.4 | 1.73 | 2.45 |
+
+### 9.3 Three Concrete Root-Cause Discoveries on 2020+ Anime
+1. **Luma-Only Edge Detection Misses 2020+ Colored Line-Art (`Iro-tsuki Sen`):**
+   - Modern 2020+ anime extensively uses colored strokes (dark purple on magenta in `anime2020_1`, brown/red on skin, blue on teal). Because `Phase23/24` computed `edge_zone` and `l_lap` purely on grayscale luma $Y = 0.299R + 0.587G + 0.114B$, chromatic lines had weaker `edge_zone` (`14.77%` vs `15.80%` with Max-Channel RGB span) and no RGB Laplacian supervision (`anime2020_1` `P24 Lap=1386.1` vs `APISR 1887.5`).
+2. **Narrow-Gap Bridging Between Close Parallel Strokes & Subpixel Jitter Softening:**
+   - In `anime2020_1`, two close parallel curved purple lines with a `2-3px` bright pink gap become partially bridged/smeared under `harsh_q62_420` and `shuffled_reencode`.
+   - Under `Q=62` / WebP compression, subpixel line centers jitter by $\pm 0.5\text{px}$, causing pixel-wise L1/Laplacian to hedge via softer edges. Adding a **Shift-Tolerant $3\times 3$ Local Contrast Span & Trough Match (`l_span`)** plus **XDoG Narrow-Gap Ridge Shoulder Recovery (`xdog_ridge` in `sh_pull`)** restores crisp stroke contrast and gap separation without ever clamping dark ink troughs upward.
+3. **Dark-Scene $16\times 16$ Macroblock `4:2:0` Chroma Bleed (`DarkChrMAE`):**
+   - In dark/shadow areas (`Y < 75/255`), `P24` lagged `APISR` on `DarkChrMAE` (`2.80` vs `2.27` on `harsh_q62_420`) because `4:2:0` macroblocks span `16x16` in 2x HR space and require dark-region chroma weighting (`w_dark`) across `4x4`, `8x8`, and `16x16` pools.
+
+### 9.4 Verified 100-Step Local Continuation Proof ([`verify_p25_improvements.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/verify_p25_improvements.py))
+Starting from `XyetherLineFlow_v24_Final.pth`, 100 local continuation steps with `Phase25LineFlowLossCandidate` + Shuffled/WebP OTF degradations achieved ([`ablate_p25_2020plus_proof.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/ablate_p25_2020plus_proof.png)):
+- **`anime2020_1` (`stream_1080p`):** `PSNR 25.64 -> 25.89 dB`, `LapVar 1567.0 -> 1682.1`, `Halo99.9 25.0 -> 22.0`, `DarkChrMAE 3.56 -> 3.19`
+- **`anime2020_1` (`harsh_q62_420`):** `PSNR 24.82 -> 25.15 dB`, `LapVar 1386.1 -> 1526.9` (`+140.8`), `Halo99.9 34.0 -> 30.0`, `DarkChrMAE 5.15 -> 4.52`
+- **`anime2020_1` (`shuffled_reencode`):** `PSNR 25.01 -> 25.26 dB`, `LapVar 1370.2 -> 1508.6` (`+138.4`), `Halo99.9 26.0 -> 23.0`, `DarkChrMAE 4.41 -> 4.00` (surpassing `APISR 4.16`)
+- **`center_ribbon`:** `stream_1080p LapVar 868.6 -> 966.1`, `harsh_q62_420 LapVar 638.8 -> 752.8` (`+114.0`, `Halo99.9` fixed at `19.0` vs `APISR 32.0`), `shuffled_reencode LapVar 671.8 -> 776.1` (`+104.3`, `DarkChrMAE 2.71 -> 2.61`).
+
+
 
 
 
