@@ -336,6 +336,59 @@ Starting from `XyetherLineFlow_v24_Final.pth`, 100 local continuation steps with
 - **`anime2020_1` (`shuffled_reencode`):** `PSNR 25.01 -> 25.26 dB`, `LapVar 1370.2 -> 1508.6` (`+138.4`), `Halo99.9 26.0 -> 23.0`, `DarkChrMAE 4.41 -> 4.00` (surpassing `APISR 4.16`)
 - **`center_ribbon`:** `stream_1080p LapVar 868.6 -> 966.1`, `harsh_q62_420 LapVar 638.8 -> 752.8` (`+114.0`, `Halo99.9` fixed at `19.0` vs `APISR 32.0`), `shuffled_reencode LapVar 671.8 -> 776.1` (`+104.3`, `DarkChrMAE 2.71 -> 2.61`).
 
+---
+
+## 10. Phase 25 (`XyetherLineFlow_v25_Final`) — Verified Cloud GPU & 2020+ Modern Anime Benchmark
+
+### 10.1 Verified 4-Regime Benchmark (`phase25_metrics_report.json`, Kaggle v37 `COMPLETE`)
+
+| Scenario | Model | PSNR (dB) | SSIM | HL1 / HL2 Min | Edge Slope | LapVar | Halo Overshoot | Flat Checker |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Clean_LR`** | `Phase23_LineFlow_v1` | 29.42 | 0.9619 | 22 / 19 | 849.4 | 903.0 | -1 | 0.15 |
+| **`Clean_LR`** | `Phase24_LineFlow_v2` | 29.69 | 0.9601 | 19 / 21 | 828.1 | 938.2 | -3 | 0.14 |
+| **`Clean_LR`** | **`Phase25_LineFlow_v3`** | **29.69** | **0.9601** | **17 / 18** | **842.9** | **958.4** | **+1 (Zero Halo)** | **0.12** |
+| **`Clean_LR`** | `APISR_4x_to_2x` (Teacher) | 27.09 | 0.9371 | 19 / 18 | 846.7 | 969.3 | +2 | 0.17 |
+| **`RealBlurry_LR`** | `Phase23_LineFlow_v1` | 28.88 | 0.9549 | 28 / 38 | 824.4 | 783.1 | +1 | 0.20 |
+| **`RealBlurry_LR`** | `Phase24_LineFlow_v2` | 29.06 | 0.9552 | 24 / 35 | 815.0 | 868.6 | -1 | 0.16 |
+| **`RealBlurry_LR`** | **`Phase25_LineFlow_v3`** | **28.98** | **0.9544** | **18 / 34** | **822.4** | **912.3** | **-2 (Zero Halo)** | **0.14** |
+| **`RealBlurry_LR`** | `APISR_4x_to_2x` (Teacher) | 27.36 | 0.9395 | 28 / 23 | 878.0 | 958.3 | +8 | 0.18 |
+| **`Harsh_Q62_LR`** | `Phase23_LineFlow_v1` | 27.73 | 0.9411 | 36 / 62 | 827.3 | 534.0 | +2 | 0.21 |
+| **`Harsh_Q62_LR`** | `Phase24_LineFlow_v2` | 28.15 | 0.9458 | 29 / 69 | 809.1 | 638.8 | +0 | 0.16 |
+| **`Harsh_Q62_LR`** | **`Phase25_LineFlow_v3`** | **27.99** | **0.9455** | **27 / 64** | **817.1** | **679.8** | **+1 (Zero Halo)** | **0.15** |
+| **`Harsh_Q62_LR`** | `APISR_4x_to_2x` (Teacher) | 26.21 | 0.9222 | 14 / 50 | 840.6 | 895.7 | +10 | 0.18 |
+| **`Shuffled_Reencode_LR`** | `Phase23_LineFlow_v1` | 28.18 | 0.9422 | 44 / 74 | 822.9 | 598.5 | +2 | 0.19 |
+| **`Shuffled_Reencode_LR`** | `Phase24_LineFlow_v2` | 28.43 | 0.9441 | 35 / 62 | 814.8 | 688.7 | +0 | 0.14 |
+| **`Shuffled_Reencode_LR`** | **`Phase25_LineFlow_v3`** | **28.46** | **0.9443** | **30 / 52** | **814.7** | **742.0** | **-1 (Zero Halo)** | **0.14** |
+| **`Shuffled_Reencode_LR`** | `APISR_4x_to_2x` (Teacher) | 26.42 | 0.9199 | 25 / 82 | 839.9 | 936.5 | +8 | 0.17 |
+
+### 10.2 Verified 2020+ Modern Anime 5-Scene Benchmark ([`eval_p25_final.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/eval_p25_final.py))
+
+| 2020+ Degradation (5-Scene Avg) | Model | PSNR (dB) | SSIM | LapVar | XDoG LineSpan | Halo99.9 | ChrMAE | DarkChrMAE |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`stream_1080p`** | `Phase23_v1` | 26.56 | 0.9052 | 1744.8 | 125.7% | 14.4 | 1.51 | 2.40 |
+| **`stream_1080p`** | `Phase24_v2` | 26.58 | 0.9009 | 1791.7 | 125.8% | 13.6 | 1.42 | 2.23 |
+| **`stream_1080p`** | **`Phase25_v3`** | **26.59** | **0.9005** | **1823.3** | **125.5%** | **14.2** | **1.37** | **2.19** |
+| **`stream_1080p`** | `APISR_4x_to_2x` | 25.70 | 0.8833 | 2004.2 | 120.9% | 31.8 | 1.69 | 1.94 |
+| **`harsh_q62_420`** | `Phase23_v1` | 26.30 | 0.8985 | 1523.8 | 120.6% | 16.6 | 1.76 | 3.01 |
+| **`harsh_q62_420`** | `Phase24_v2` | 26.38 | 0.8969 | 1600.4 | 122.0% | 15.4 | 1.62 | 2.80 |
+| **`harsh_q62_420`** | **`Phase25_v3`** | **26.37** | **0.8962** | **1635.4** | **122.0%** | **16.0** | **1.58** | **2.71** |
+| **`harsh_q62_420`** | `APISR_4x_to_2x` | 25.36 | 0.8786 | 1922.8 | 117.1% | 33.4 | 1.79 | 2.27 |
+| **`shuffled_reencode`** | `Phase23_v1` | 26.28 | 0.8923 | 1522.6 | 118.0% | 14.6 | 1.72 | 2.91 |
+| **`shuffled_reencode`** | `Phase24_v2` | 26.33 | 0.8913 | 1582.6 | 118.6% | 13.6 | 1.57 | 2.70 |
+| **`shuffled_reencode`** | **`Phase25_v3`** | **26.36** | **0.8910** | **1620.5** | **118.8%** | **13.8** | **1.52** | **2.65** |
+| **`shuffled_reencode`** | `APISR_4x_to_2x` | 25.20 | 0.8745 | 1918.1 | 114.6% | 32.4 | 1.73 | 2.45 |
+
+### 10.3 Key Verified Gains & ONNXRuntime Parity
+1. **Superior Hairline Recovery Under Shuffled Multi-Codec Re-encoding (`Shuffled_Reencode_LR`):**
+   - On `Shuffled_Reencode_LR` ([`p25_hairline_6x.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p25_hairline_6x.png) Row 3), `APISR`'s lower vertical hairline fades to `HL2=82` (`[87, 82, 80, 85, 91]`), whereas **`Phase25_LineFlow_v3` achieves `HL2=52` (`[82, 79, 67, 58, 53]`)** alongside `+53.3` higher `LapVar` (`742.0` vs `P24 688.7`) and `Halo = -1`.
+2. **2020+ Colored Stroke & Dark Chroma Gains ([`p25_2020plus_anime_vs_apisr.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p25_2020plus_anime_vs_apisr.png)):**
+   - Improves `LapVar` (+31 to +38 avg across all 3 modern regimes) and lowers `ChrMAE` & `DarkChrMAE` across all 3 regimes (`anime2020_1` `shuffled_reencode`: `PSNR 25.08 -> 25.32 dB`, `LapVar 1366.7 -> 1405.1`, `DarkChrMAE 4.33 -> 4.13` beating `APISR 4.16`).
+3. **ONNXRuntime Parity & CPU Speed (`256x256 -> 512x512`, 4 threads):**
+   - `XyetherLineFlow_v25_Final.onnx` vs PyTorch EMA: **`max_abs_diff = 7.75e-07`**
+   - CPU latency: **`776.8 ms` warm / `838.1 ms` cold** (~**7.6x faster** than `APISR.onnx` CPU `~5,915 ms`).
+   - Checkpoints archived in [`checkpoints/Phase25_XyetherLineFlow_v3/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase25_XyetherLineFlow_v3/XyetherLineFlow_v25_Final.pth), [`XyetherLineFlow_v25_Final.onnx`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase25_XyetherLineFlow_v3/XyetherLineFlow_v25_Final.onnx), and backed up on Hugging Face (`Thanawanit/Kaggle-Backup/checkpoints/Phase25_XyetherLineFlow_v3/`).
+
+
 
 
 
