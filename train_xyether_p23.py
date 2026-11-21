@@ -25,6 +25,7 @@ from losses.xyether_losses import (
     Phase23ZeroHaloAPISRTeacher,
     Phase24LineFlowLoss,
     Phase25LineFlowLoss,
+    Phase26LineFlowLoss,
     VGGPerceptualLoss,
 )
 
@@ -185,8 +186,11 @@ def train_p23(args) -> None:
     ema = ModelEMA(model, decay=args.ema_decay)
     teacher = Phase23ZeroHaloAPISRTeacher(
         onnx_path=args.teacher_onnx_path,
+        full_color_consolidation=(args.loss_version >= 26),
     ).to(device)
-    if args.loss_version >= 25:
+    if args.loss_version >= 26:
+        criterion = Phase26LineFlowLoss().to(device)
+    elif args.loss_version == 25:
         criterion = Phase25LineFlowLoss().to(device)
     elif args.loss_version == 24:
         criterion = Phase24LineFlowLoss().to(device)
