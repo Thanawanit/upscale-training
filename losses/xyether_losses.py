@@ -1226,9 +1226,13 @@ class Phase23ZeroHaloAPISRTeacher(LumaGuidedAPISRTeacher):
 
         span_gt = F.max_pool2d(gt_y, 3, 1, 1) - (-F.max_pool2d(-gt_y, 3, 1, 1))
         span_ap = F.max_pool2d(ap_y, 3, 1, 1) - (-F.max_pool2d(-ap_y, 3, 1, 1))
-        span_edge = torch.maximum(span_gt, span_ap)
-        # Mild dilation keeps 1px shoulder recovery crisp next to 1px hairlines without widening halo far into flats
-        edge_zone = F.max_pool2d(((span_edge - 0.028) / 0.055).clamp(0.0, 1.0), 3, 1, 1)
+        span_rgb = torch.maximum(
+            (F.max_pool2d(gt_t, 3, 1, 1) - (-F.max_pool2d(-gt_t, 3, 1, 1))).max(dim=1, keepdim=True)[0],
+            (F.max_pool2d(ap_t, 3, 1, 1) - (-F.max_pool2d(-ap_t, 3, 1, 1))).max(dim=1, keepdim=True)[0],
+        )
+        span_edge = torch.maximum(torch.maximum(span_gt, span_ap), 0.85 * span_rgb)
+        # Mild dilation keeps 1px shoulder recovery crisp next to 1px hairlines & 2020+ colored strokes
+        edge_zone = F.max_pool2d(((span_edge - 0.026) / 0.055).clamp(0.0, 1.0), 3, 1, 1)
 
         max3_gt_rgb = F.max_pool2d(gt_t, 3, 1, 1) + 0.002
         ap_no_halo = torch.minimum(ap_t, max3_gt_rgb)
@@ -1385,4 +1389,110 @@ class Phase24LineFlowLoss(Phase23LineFlowLoss):
             'l_chr': l_chr.item(),
             'l_halo': l_halo.item(),
         }
+
+
+class Phase25LineFlowLoss(Phase24LineFlowLoss):
+    """
+    Phase 25 APISR-Inspired Chromatic XDoG Line-Flow Loss (2020+ Modern Anime & Shuffled Multi-Codec Upgrade):
+    1. Chromatic Max-Channel Edge Zone: detects 2020+ colored line-art (Iro-tsuki Sen) with equal sensitivity to black ink.
+    2. XDoG Narrow-Gap Ridge Shoulder Recovery (`xdog_ridge` in `sh_pull`): keeps narrow 2-3px bright gaps between parallel lines crisp and unbridged.
+    3. Full 3-Channel RGB + Luma Strict-Edge Laplacian + Shift-Tolerant 3x3 Local Contrast Span & Trough Match (`l_span`):
+       eliminates regression-to-the-mean softening under Harsh Q62 and Shuffled Multi-Codec Re-encode.
+    4. Dark-Weighted Multi-Scale (4x4, 8x8, 16x16 macroblock) De-4:2:0 Chroma Loss (`l_chr`).
+    """
+    def forward(self, pred: torch.Tensor, tar_b: torch.Tensor, gt_b: torch.Tensor, lr_b: torch.Tensor, edge_zone: torch.Tensor = None):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        gt_b = gt_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode='nearest')
+        luma_w = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+        lap_k3 = lap_k.repeat(3, 1, 1, 1)
+
+        pred_y = (pred * luma_w).sum(dim=1, keepdim=True)
+        tar_y = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        gt_y = (gt_b * luma_w).sum(dim=1, keepdim=True)
+        near_y = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        pred_cr, tar_cr = pred[:, 0:1] - pred[:, 1:2], tar_b[:, 0:1] - tar_b[:, 1:2]
+        pred_cb, tar_cb = pred[:, 2:3] - pred[:, 1:2], tar_b[:, 2:3] - tar_b[:, 1:2]
+
+        with torch.no_grad():
+            span_t_y = F.max_pool2d(tar_y, 3, 1, 1) - (-F.max_pool2d(-tar_y, 3, 1, 1))
+            span_t_rgb = (F.max_pool2d(tar_b, 3, 1, 1) - (-F.max_pool2d(-tar_b, 3, 1, 1))).max(dim=1, keepdim=True)[0]
+            span_t = torch.maximum(span_t_y, 0.85 * span_t_rgb)
+            ez_chroma = F.max_pool2d(((span_t - 0.026) / 0.055).clamp(0.0, 1.0), 3, 1, 1)
+            edge_zone = torch.maximum(edge_zone.float(), ez_chroma) if edge_zone is not None else ez_chroma
+
+            # XDoG band-pass: line trough vs narrow bright gap ridge between parallel strokes
+            g2 = F.avg_pool2d(tar_y, 7, 1, 3)
+            xdog_line = (F.relu(g2 - tar_y) / 0.04).clamp(0.0, 1.0)
+            xdog_ridge = (F.relu(tar_y - g2) / 0.04).clamp(0.0, 1.0)
+
+            deblur_err = (tar_b - near_b).abs().max(dim=1, keepdim=True)[0]
+            w_pix = 1.0 + 4.5 * edge_zone + 5.5 * (deblur_err / 0.12).clamp(0.0, 1.0)
+            ink_pull = ((F.relu(near_y - tar_y) / 0.070).clamp(0.0, 1.0) + 0.35 * xdog_line).clamp(0.0, 1.25) * edge_zone
+            sh_pull = ((F.relu(tar_y - near_y) / 0.070).clamp(0.0, 1.0) + 0.45 * xdog_ridge).clamp(0.0, 1.35) * edge_zone
+            edge_strict = (edge_zone > 0.28).float()
+            edge_dil5 = F.max_pool2d(edge_zone, 5, 1, 2)
+            w_dark = 1.0 + 2.2 * ((0.36 - gt_y) / 0.28).clamp(0.0, 1.0)
+
+        l_pix = (w_pix * (pred - tar_b).abs()).mean() + 0.8 * (w_pix * (pred_y - tar_y).abs()).mean()
+        l_ink = (ink_pull * F.relu(pred_y - tar_y)).mean() + 0.65 * (ink_pull * F.relu(pred - tar_b).mean(dim=1, keepdim=True)).mean()
+        l_sh = (sh_pull * F.relu(tar_y - pred_y)).mean() + 0.70 * (sh_pull * F.relu(tar_b - pred).mean(dim=1, keepdim=True)).mean()
+        l_grad = self._multiscale_directional_and_diag_grad(pred, tar_b, 0.30 + 3.25 * edge_zone)
+
+        lap_pred_rgb = F.conv2d(pred, lap_k3, padding=1, groups=3)
+        lap_tar_rgb = F.conv2d(tar_b, lap_k3, padding=1, groups=3)
+        l_lap = (
+            0.55 * (edge_strict * (F.conv2d(pred_y, lap_k, padding=1) - F.conv2d(tar_y, lap_k, padding=1)).abs()).mean()
+            + 0.70 * (edge_strict * (lap_pred_rgb - lap_tar_rgb).abs()).mean()
+        )
+
+        pred_max3 = F.max_pool2d(pred, 3, 1, 1)
+        pred_min3 = -F.max_pool2d(-pred, 3, 1, 1)
+        tar_max3 = F.max_pool2d(tar_b, 3, 1, 1)
+        tar_min3 = -F.max_pool2d(-tar_b, 3, 1, 1)
+        l_span = (
+            (edge_strict * ((pred_max3 - pred_min3) - (tar_max3 - tar_min3)).abs()).mean()
+            + 0.85 * ((edge_strict * (0.4 + 0.6 * xdog_line)) * F.relu(pred_min3 - tar_min3)).mean()
+        )
+
+        l_chr = (
+            (edge_dil5 * ((pred_cr - tar_cr).abs() + (pred_cb - tar_cb).abs())).mean()
+            + 0.9 * (F.avg_pool2d(w_dark, 4, 4) * ((F.avg_pool2d(pred_cr, 4, 4) - F.avg_pool2d(tar_cr, 4, 4)).abs() + (F.avg_pool2d(pred_cb, 4, 4) - F.avg_pool2d(tar_cb, 4, 4)).abs())).mean()
+            + 0.8 * (F.avg_pool2d(w_dark, 8, 8) * ((F.avg_pool2d(pred_cr, 8, 8) - F.avg_pool2d(tar_cr, 8, 8)).abs() + (F.avg_pool2d(pred_cb, 8, 8) - F.avg_pool2d(tar_cb, 8, 8)).abs())).mean()
+            + 0.7 * (F.avg_pool2d(w_dark, 16, 16) * ((F.avg_pool2d(pred_cr, 16, 16) - F.avg_pool2d(tar_cr, 16, 16)).abs() + (F.avg_pool2d(pred_cb, 16, 16) - F.avg_pool2d(tar_cb, 16, 16)).abs())).mean()
+        )
+
+        max3_gt_rgb = F.max_pool2d(gt_b, 3, 1, 1) + 0.002
+        max3_gt_y = F.max_pool2d(gt_y, 3, 1, 1) + 0.002
+        l_halo = F.relu(pred - max3_gt_rgb).mean() + F.relu(pred_y - max3_gt_y).mean()
+
+        barrier_ref = edge_zone * tar_b + (1.0 - edge_zone) * gt_b
+        l_cel = (
+            self._bilateral_cel_smoothness_v2(pred, tar_b, barrier_ref)
+            + 1.35 * self._bilateral_cel_smoothness_v2(pred_cr, tar_cr, barrier_ref)
+            + 1.35 * self._bilateral_cel_smoothness_v2(pred_cb, tar_cb, barrier_ref)
+        )
+
+        total = (
+            1.6 * l_pix
+            + 2.8 * l_ink
+            + 2.2 * l_sh
+            + 3.2 * l_grad
+            + 1.2 * l_lap
+            + 1.4 * l_span
+            + 1.7 * l_chr
+            + 5.5 * l_halo
+            + 2.6 * l_cel
+        )
+        return total, {
+            'l_active': (l_pix + l_ink + l_sh + l_span).item(),
+            'l_quiet': l_cel.item(),
+            'l_grad': (l_grad + l_lap).item(),
+            'l_chr': l_chr.item(),
+            'l_halo': l_halo.item(),
+        }
+
 

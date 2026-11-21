@@ -160,21 +160,30 @@ class AnimeOTFDataset(Dataset):
                 hr_patch = self._reflect_warm_cool_bgr(hr_patch)
         hr_patch = np.ascontiguousarray(hr_patch)
 
-        # 3. Phase 24 Multi-Regime Anime Degradation (25% Clean/Mild + 45% Medium Web + 30% Harsh Web Q52..74)
+        # 3. Phase 25 APISR-Inspired 4-Regime Anime Degradation:
+        #    (22% Clean/Mild + 38% Medium Stream + 22% Harsh Q52..74 + 18% Shuffled-Resize Multi-Codec JPEG/WebP)
         lr_patch = hr_patch.copy()
         lr_h = self.patch_size // 2
         lr_w = self.patch_size // 2
         regime = random.random()
 
-        if regime < 0.25:
+        def apply_codec(im, q_lo, q_hi, webp_p=0.35):
+            q = random.randint(q_lo, q_hi)
+            if random.random() < webp_p:
+                ok, enc = cv2.imencode('.webp', im, [int(cv2.IMWRITE_WEBP_QUALITY), q])
+            else:
+                ok, enc = cv2.imencode('.jpg', im, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+            return cv2.imdecode(enc, cv2.IMREAD_COLOR) if ok else im
+
+        if regime < 0.22:
             # Clean / Mild regime
             if random.random() < 0.45:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=cv2.INTER_AREA)
             if random.random() < 0.20:
-                lr_patch = self._apply_jpeg_compression(lr_patch, q_min=88, q_max=96)
-        elif regime < 0.70:
-            # Medium RealBlurry / 4:2:0 Web regime
+                lr_patch = apply_codec(lr_patch, 88, 96, webp_p=0.25)
+        elif regime < 0.60:
+            # Medium RealBlurry / 2020+ Stream 1080p regime
             lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.45, sigma_max=1.10)
             interp = random.choices(
                 [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC],
@@ -184,8 +193,8 @@ class AnimeOTFDataset(Dataset):
             if random.random() < 0.40:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.45)
             if random.random() < 0.85:
-                lr_patch = self._apply_jpeg_compression(lr_patch, q_min=68, q_max=92)
-        else:
+                lr_patch = apply_codec(lr_patch, 68, 92, webp_p=0.30)
+        elif regime < 0.82:
             # Harsh Compressed Web / Stream regime (kills Q62 mush & 4:2:0 dark-fill chroma bleed)
             sx = random.uniform(0.60, 1.35)
             sy = random.uniform(0.55, 1.30)
@@ -197,9 +206,32 @@ class AnimeOTFDataset(Dataset):
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
             if random.random() < 0.40:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
-            lr_patch = self._apply_jpeg_compression(lr_patch, q_min=52, q_max=74)
+            lr_patch = apply_codec(lr_patch, 52, 74, webp_p=0.35)
             if random.random() < 0.30:
-                lr_patch = self._apply_jpeg_compression(lr_patch, q_min=68, q_max=88)
+                lr_patch = apply_codec(lr_patch, 68, 88, webp_p=0.40)
+        else:
+            # APISR Shuffled-Resize & Prediction-Oriented Multi-Codec Re-encode regime
+            s_inter = random.uniform(0.62, 1.22)
+            ih = max(lr_h, int(round(self.patch_size * s_inter)))
+            iw = max(lr_w, int(round(self.patch_size * s_inter)))
+            interp1 = random.choice([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA])
+            interp2 = random.choices(
+                [cv2.INTER_AREA, cv2.INTER_CUBIC, cv2.INTER_LINEAR],
+                weights=[0.45, 0.35, 0.20]
+            )[0]
+            if random.random() < 0.50:
+                lr_patch = cv2.resize(lr_patch, (iw, ih), interpolation=interp1)
+                lr_patch = apply_codec(lr_patch, 64, 86, webp_p=0.45)
+                sx, sy = random.uniform(0.50, 1.15), random.uniform(0.50, 1.15)
+                lr_patch = cv2.GaussianBlur(lr_patch, (0, 0), sigmaX=sx, sigmaY=sy)
+                lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp2)
+            else:
+                sx, sy = random.uniform(0.55, 1.20), random.uniform(0.55, 1.20)
+                lr_patch = cv2.GaussianBlur(lr_patch, (0, 0), sigmaX=sx, sigmaY=sy)
+                lr_patch = apply_codec(lr_patch, 62, 84, webp_p=0.45)
+                lr_patch = cv2.resize(lr_patch, (iw, ih), interpolation=interp1)
+                lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp2)
+            lr_patch = apply_codec(lr_patch, 58, 82, webp_p=0.55)
 
         # Convert to RGB float [0, 1]
         hr_rgb = cv2.cvtColor(hr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
