@@ -571,13 +571,65 @@ Under identical 60-step `batch=4` local continuation on held-out `img3` & `BlueA
 - `A_P26Loss_Control`: `BA_PSNR=22.53`, `LowLap=4.70`, `CheekGrad=0.22`, `Halo=29.0`
 - **`B_P27Loss_Pure` (`Phase27` Loss + Freq-Decoupled Hybrid Target + Angle-Only Curve Smoothness):** `BA_PSNR=22.59`, `LowLap=4.73`, `CheekGrad=0.25 (+13.6%)`, `Halo=28.0` (and in 220-step `verify_p27_curve_and_blush_250steps.py`: `CheekGrad=0.23 -> 0.27`, `LowLap=4.88 -> 5.11`, `FlareSat=40.7 -> 38.4`). Note that full 7,500-iter Kaggle training with `VGGPerceptualLoss` and 350 Safebooru 4K images is required to prevent small-subset `Halo` drift (`23 -> 28`) and fully realize `Shuffled Bilinear` curve straightening.
 
+---
 
+## 14. Phase 27 (`XyetherLineFlow_v27_Final`) — Kaggle v39 Training & Full Verification
 
+### 14.1 Training Run & Artifacts (`Kaggle Kernel v39`)
+- **Status:** `COMPLETE` (`7,500 / 7,500` iterations in `9,954.1s` / `2.76h` on Kaggle T4 GPU).
+- **Checkpoints & Reports Archived Locally ([`checkpoints/Phase27_XyetherLineFlow_v5/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase27_XyetherLineFlow_v5/)):**
+  - `XyetherLineFlow_v27_Final.pth` (`4,175,275` bytes)
+  - `XyetherLineFlow_v27_Final.onnx` (`2,077,084` bytes)
+  - `phase27_metrics_report.json` (`48,741` bytes)
+- **ONNX Parity & Local CPU Speed (`256x256 -> 512x512`):**
+  - Kaggle T4 ONNX parity: `max_abs_diff = 8.94e-07`
+  - Local CPU ONNX parity: `max_abs_diff = 1.31e-06` | `CPU Cold = 814.0 ms` | `CPU Warm = 775.0 ms`
 
+### 14.2 Kaggle 4-Regime Synthetic Validation (`xyether-training-runner.log`)
+| Regime | Model | `HL1` | `HL2` | `LapVar` | `MicroLap` | `MAE_AP` | `Halo` | `Checker` | `PSNR` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Clean_LR`** | `Phase26_LineFlow_v4` | 15 | 22 | 955.3 | 2.50 | 4.08 | +2 | 0.16 | 29.22 |
+| **`Clean_LR`** | **`Phase27_LineFlow_v5`** | **13** | 23 | 945.9 | **2.51** | 4.88 | **+0** | **0.13** | **29.57** |
+| **`Clean_LR`** | `APISR_4x_to_2x` | 19 | 18 | 969.3 | 3.08 | 0.00 | +2 | 0.17 | 27.09 |
+| **`RealBlurry_LR`** | `Phase26_LineFlow_v4` | 16 | 37 | 915.5 | 2.35 | 3.94 | +0 | 0.17 | 28.53 |
+| **`RealBlurry_LR`** | **`Phase27_LineFlow_v5`** | **14** | **32** | 906.2 | **2.42** | 4.54 | **-3** | **0.15** | **28.81** |
+| **`RealBlurry_LR`** | `APISR_4x_to_2x` | 28 | 23 | 958.3 | 3.70 | 0.00 | +8 | 0.18 | 27.36 |
+| **`Harsh_Q62_LR`** | `Phase26_LineFlow_v4` | 30 | 68 | 690.4 | 2.36 | 4.79 | +3 | 0.17 | 27.58 |
+| **`Harsh_Q62_LR`** | **`Phase27_LineFlow_v5`** | **28** | **61** | **700.4** | 2.35 | 5.41 | **+2** | **0.15** | **27.80** |
+| **`Harsh_Q62_LR`** | `APISR_4x_to_2x` | 14 | 50 | 895.7 | 4.02 | 0.00 | +10 | 0.18 | 26.21 |
+| **`Shuffled_Reencode_LR`** | `Phase26_LineFlow_v4` | 33 | 58 | 753.9 | 2.21 | 4.66 | +1 | 0.16 | 28.21 |
+| **`Shuffled_Reencode_LR`** | **`Phase27_LineFlow_v5`** | **30** | **55** | **757.4** | **2.22** | 5.33 | **-3** | **0.14** | **28.42** |
+| **`Shuffled_Reencode_LR`** | `APISR_4x_to_2x` | 25 | 82 | 936.5 | 3.94 | 0.00 | +8 | 0.17 | 26.42 |
 
+### 14.3 User 3-Scene Full Panel & Native 2x ROI Measurements (`img3_hair_flare`)
+- **Bottom-Right Curved Light-Rim Straightness (`BottomRight_Curve`):**
+  - `LineFlow_v25` -> `LineFlow_v26` -> **`LineFlow_v27`**:
+    - `PolyRMS`: `0.647` -> `0.623` -> **`0.615 px`** (`-4.9%` vs `v25`)
+    - `Seg16_Wobble`: `0.1732` -> `0.1440` -> **`0.1358 px`** (`-21.6%` vs `v25`, `-5.7%` vs `v26`)
+    - `Strong_v3` (`0.569 px` / `0.0767 px`) and `APISR_2x` (`0.513 px` / `0.0931 px`) remain slightly straighter on that diagonal arc due to their `Nearest(x)` base skip + 2D H/V strip kernels.
+- **Cheek Blush & Low-Contrast Detail (`Cheek_BlushLines`):**
+  - `LineFlow_v26` (`Grad1px=0.23`, `LapVar=9.6`) -> **`LineFlow_v27`** (`Grad1px=0.33`, **`+43.5%`**, `LapVar=17.3`, **`+80.2%`**); still softer than `APISR_2x` (`0.55 / 51.6`), `AnimeSharpV4_FastPU` (`1.09 / 29.6`), and `Strong_v3` (`1.23 / 239.2`).
+- **Hair Light-Flare Consolidation (`TopRight_HairFlare`):**
+  - `LineFlow_v27` tightened further (`Sat=40.5`, `Warm=11.40` vs `v26` `40.7 / 11.44` and `v25` `41.3 / 11.67`).
+- **All 3 User Scenes (`img0_sunlight` / `img1_dark_hall` / `img3_hair_flare`):**
+  - `LowContrast(4..22) Lap`: `v26` (`2.62 / 3.69 / 1.87`) -> **`v27` (`2.71 / 3.83 / 2.04`)**
+  - `HighContrast(>=35) Lap`: **`v27`** ranked #1 across all models on all 3 scenes (**`110.99 / 91.50 / 86.35`** vs `APISR` `101.90 / 87.69 / 80.41` and `Strong_v3` `97.54 / 84.07 / 81.11`), while achieving #1 `MAE_vs_APISR` on `img3_hair_flare` (**`1.72`** vs `v26 1.80`, `Strong_v3 1.80`).
 
-
-
-
-
+### 14.4 2021++ 5-Scene Modern Anime Sequential Benchmark (`bluearchive`, `bocchi`, `frieren`, `kusuriya`, `oshinoko`)
+| Condition | Model | `PSNR` | `SSIM` | `LapVar` | `LowLap` | `HighLap` | `Halo99.9` | `ChrMAE` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`stream_1080p`** | `LineFlow_v26` | 23.86 | 0.8891 | 2876.2 | 3.45 | 78.54 | 22.4 | 2.17 |
+| **`stream_1080p`** | **`LineFlow_v27`** | 23.85 | **0.8918** | **2923.8** | **3.50** | **79.28** | 23.0 | **2.11** |
+| **`stream_1080p`** | `APISR_2x` | 23.27 | 0.8796 | 3414.2 | 5.16 | 86.75 | 46.6 | 2.36 |
+| **`stream_1080p`** | `Strong_v3` | 23.11 | 0.8756 | 3403.9 | 6.61 | 89.87 | 47.6 | 2.40 |
+| **`stream_1080p`** | `AnimeSharpV4_FastPU` | **30.74** | **0.9548** | 856.9 | 3.93 | 47.62 | **14.2** | **1.58** |
+| **`stream_1080p`** | `ModernSpanimationV1` | 27.82 | 0.9219 | 722.4 | 6.06 | 42.10 | 17.8 | 2.78 |
+| **`harsh_q62_420`** | `LineFlow_v26` | 23.99 | 0.8794 | 2136.1 | 3.32 | 66.98 | 20.4 | 2.31 |
+| **`harsh_q62_420`** | **`LineFlow_v27`** | 23.94 | **0.8816** | **2203.8** | **3.42** | **68.20** | **20.0** | **2.28** |
+| **`harsh_q62_420`** | `APISR_2x` | 23.06 | 0.8630 | 2876.3 | 5.41 | 78.50 | 42.2 | 2.45 |
+| **`harsh_q62_420`** | `Strong_v3` | 22.29 | 0.8457 | 3033.3 | 7.11 | 83.16 | 45.0 | 2.60 |
+| **`shuffled_reencode`** | `LineFlow_v26` | 24.18 | 0.8765 | 2156.9 | 2.97 | 66.84 | 18.4 | 2.26 |
+| **`shuffled_reencode`** | **`LineFlow_v27`** | 24.14 | **0.8797** | **2222.6** | **3.02** | **68.03** | **18.2** | **2.23** |
+| **`shuffled_reencode`** | `APISR_2x` | 23.07 | 0.8545 | 2939.7 | 4.98 | 78.64 | 44.6 | 2.38 |
+| **`shuffled_reencode`** | `Strong_v3` | 22.78 | 0.8570 | 2948.5 | 6.17 | 82.00 | 44.6 | 2.47 |
 
