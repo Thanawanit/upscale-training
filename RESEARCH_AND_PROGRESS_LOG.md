@@ -522,6 +522,56 @@ By replacing `0.85 * gt_t` non-edge dilution with **Full-Field Zero-Halo APISR T
    - **Verified Mathematical Root Cause (`task-9447`):** Inside `Phase23ZeroHaloAPISRTeacher.forward(hr_tensor)`, `ap_t` is generated from a **2x-downsampled** version of `gt_t` (`lr_clean = F.avg_pool2d(gt_t, 2, 2) -> APISR(80x80) -> avg_pool2d(2, 2)`). Downsampling `gt_t` (`160x160`) to `80x80` via `2x2` box averaging halves the contrast of 1px micro-lines (`4..14` levels $\rightarrow$ `2..7` levels), causing `APISR(80x80)` to smooth them out in `ap_t` (`Tar_P26 LowContrast Lap = 3.92` vs `Tar_Old = 4.24`), AND 78% of `AnimeOTFDataset` applies heavy blur/WebP degradation to `lr_patch` that teaches the student to treat `4..12` level fluctuations as compression noise.
    - **Next-Phase Solution (Frequency-Decoupled Hybrid Target for Phase 27 if desired):** Take **low-frequency base color & light-flare consolidation (`F.avg_pool2d(ap_t, 5, 1, 2)`) + high-contrast edges (`strong_edge * ap_no_halo`) from `APISR`**, while injecting **high-frequency micro-detail residual (`gt_t - F.avg_pool2d(gt_t, 5, 1, 2)`) from `160x160` native `gt_t`** inside the `4..24` RGB-level micro-detail band!
 
+---
+
+## 13. Pre-Phase 27 10-Model 2021++ Anime Evaluation, Topaz/Literature Analysis & Bottom-Right Curve Wobble Root Cause
+
+### 13.1 Genuine 2021++ 5-Scene Modern Anime Benchmark Across 10 SOTA 2x Models ([`benchmark_all_sota_2021plus.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/benchmark_all_sota_2021plus.py))
+Evaluated on 5 modern 2021++ anime titles (`Sousou no Frieren`, `Bocchi the Rock!`, `Oshi no Ko`, `Kusuriya no Hitorigoto`, `Blue Archive`) across `stream_1080p`, `harsh_q62_420`, and `shuffled_reencode`, plus visual inspection of every rendered crop ([`p27_2021plus_5scenes_visual_compare.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p27_2021plus_5scenes_visual_compare.png), [`p27_sota_2021plus_frieren_visual.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p27_sota_2021plus_frieren_visual.png), [`p27_sota_img3_Cheek_Blush.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p27_sota_img3_Cheek_Blush.png)):
+
+| 2021++ Degradation (5-Scene Avg) | Model | PSNR (dB) | SSIM | LapVar | LowLap (`4..22` lv) | HighLap (`>=35` lv) | Halo99.9 | ChrMAE |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`harsh_q62_420`** | `LineFlow_v25` / `v26` | 24.14 / 23.99 | 0.8802 / 0.8794 | 2162.3 / 2136.1 | 3.70 / 3.32 | 67.74 / 66.98 | **20.3 / 20.4** | 2.22 / 2.31 |
+| **`harsh_q62_420`** | `APISR_2x` (Teacher) | 23.06 | 0.8630 | 2876.3 | **5.41** | **78.50** | 42.2 | 2.45 |
+| **`harsh_q62_420`** | `Strong_v3` | 22.29 | 0.8457 | 3033.3 | **7.11** | **83.16** | 45.0 | 2.60 |
+| **`harsh_q62_420`** | **`AnimeSharpV4_FastPU`** (`2025-01`) | 29.20 | **0.9270** | 703.3 | 4.22 | 42.72 | 16.2 | **1.85** |
+| **`harsh_q62_420`** | `AnimeSharpV4_RCAN` (`2025-01`) | **29.29** | 0.9224 | 334.0 | 4.28 | 30.11 | **12.2** | 1.87 |
+| **`harsh_q62_420`** | `ModernSpanimationV1` (`2024-04`) | 26.48 | 0.8887 | 560.3 | **6.20** | 36.53 | 19.6 | 2.97 |
+| **`harsh_q62_420`** | `AnimeJaNai_V3Sharp1` (`2024-01`) | 27.60 | 0.8986 | 321.3 | 4.39 | 27.05 | 15.4 | 2.24 |
+| **`harsh_q62_420`** | `RPLKSR_Sharp` / `MoSR_Sharp` | 27.11 / 27.53 | 0.8809 / 0.8970 | 169.2 / 194.1 | 4.79 / 4.70 | 21.19 / 22.58 | 16.6 / 13.2 | 2.07 / 2.00 |
+| **`shuffled_reencode`** | `LineFlow_v25` / `v26` | 24.35 / 24.18 | 0.8788 / 0.8765 | 2183.0 / 2156.9 | 3.25 / 2.97 | 67.61 / 66.84 | **18.2 / 18.4** | 2.21 / 2.26 |
+| **`shuffled_reencode`** | `APISR_2x` | 23.07 | 0.8545 | 2939.7 | 4.98 | 78.64 | 44.6 | 2.38 |
+| **`shuffled_reencode`** | `Strong_v3` | 22.78 | 0.8570 | 2948.5 | **6.17** | **82.00** | 44.6 | 2.47 |
+| **`shuffled_reencode`** | **`AnimeSharpV4_FastPU`** | **29.04** | **0.9234** | 695.9 | 3.99 | 41.59 | 16.6 | **1.94** |
+| **`shuffled_reencode`** | `ModernSpanimationV1` | 26.47 | 0.8855 | 520.3 | **5.67** | 35.16 | 19.4 | 2.98 |
+
+- **Verified Visual Findings (What Actually Looks Good to Human Eyes):**
+  1. **`APISR_2x`** dominates razor-sharp vector main lines (`HighLap = 78.50–86.75`), hair flare base color consolidation (`TopRight_Flare Sat = 36.4`), and smooth curved light rims (`PolyRMS = 0.513 px`, `Seg16 = 0.0931 px`). However, it produces **heavy neon overshoot halos (`Halo99.9 = 42.2–46.6`)** and erases subtle `4..16` level cheek blush hatching in compressed 2021++ scenes (`Frieren`).
+  2. **`AnimeSharpV4_FastPU` (`SSIM = 0.9548 / 0.9270`)** & **`ModernSpanimationV1` (`LowLap = 6.20`)** keep **100% of low-contrast `4..16` level micro-details (`Cheek_Blush Grad1px = 1.09 / 1.02` vs `LineFlow_v26 = 0.23`, `APISR = 0.55`)** with true warm-pink color fidelity (never over-darkened grey/black scratches like `Strong_v3`), plus `ModernSpanimationV1` achieves smooth `Seg16 = 0.0981 px` curves — though both remain noticeably softer on thick blurred compression contours (`HighLap = 35–48` vs `APISR 78.5–86.8`).
+  3. **Topaz Video AI Literature Context:** Topaz's live-action/video models (*Proteus / Artemis / Rhea*) excel at temporal video stabilization, but their photographic training priors introduce waxy/plastic skin textures and ringing on 2D anime cel fills unless sharpening/detail recovery sliders are dialed down; *Gaia* is frame-independent for CG/animation yet trails anime-native pipelines (`APISR`, `Real-CUGAN`, `AnimeJaNai/SPAN`) on restoring degraded thin anime line art.
+
+### 13.2 Bottom-Right Curved Light-Rim Wobble Lineage & Root Cause ([`trace_curve_wobble_lineage.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/trace_curve_wobble_lineage.py), [`test_curve_straightness_hypothesis.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/test_curve_straightness_hypothesis.py))
+
+Extracting exact sub-pixel crossing coordinates $x(y)$ along the bottom-right pink-cream light arc in `img3` (`p27_lineage_curve_wobble_trace.png`, `p27_sota_img3_BottomRight_Curve.png`, `p27_exact_user_attached_br_zoom.png`):
+
+| Model | `PolyRMS` (Smooth Arc Deviation) | `MaxBend` | `Seg16px_Wobble` (16px Segment Ripples) | `Smooth_D2` (2px Staircase Roughness) |
+| :--- | :---: | :---: | :---: | :---: |
+| `Original_Bic` | 0.692 px | 1.887 px | 0.2800 px | 0.3164 px |
+| `P22_Compact` (`XyetherCompactNet`) | 0.708 px | 1.988 px | — | 0.2198 px |
+| `LineFlow_v23` / `v24` / `v25` | 0.692 / 0.664 / 0.647 px | 1.951 / 1.793 / 1.737 px | — / — / 0.1732 px | 0.1742 / 0.1351 / 0.1134 px |
+| `LineFlow_v26` | 0.623 px | 1.628 px | 0.1440 px | **0.0968 px** |
+| **`Strong_v3`** (`XyetherCompactNet`) | **0.569 px** | **1.440 px** | **0.0767 px** | **0.0624 px** |
+| **`ModernSpanimationV1`** (SPAN) | 0.592 px | **1.358 px** | **0.0981 px** | 0.1341 px |
+| **`APISR_2x`** (GRL) | **0.513 px** | **1.379 px** | **0.0931 px** | **0.0959 px** |
+
+- **Root Cause Proven:** While `LineFlow_v26` already matched `APISR` at pixel-level smoothness (`Smooth_D2 = 0.0968 px` vs `APISR 0.0959 px`), `Original`'s interpolation/compression quantization leaves `Seg16px_Wobble = 0.2800 px`, and our `AnimeOTFDataset` only included intermediate Bilinear/Cubic scale-jittered curve wobble `18%` of the time (`82%` used smooth `GaussianBlur -> INTER_AREA`). Combined with `Phase26LineFlowLoss` loosening `l_halo` against `max3_tar_rgb` instead of `max3_gt_rgb` and lacking multi-scale `3x3 / 7x7 / 11x11` orientation-only curve smoothness, `v25/v26` reproduced `0.173 / 0.144 px` of `Original`'s `16px` arc ripples instead of straightening them like `Strong_v3` (`0.077 px`), `APISR` (`0.093 px`), or `ModernSpanimationV1` (`0.098 px`).
+
+### 13.3 Controlled `Batch=4` A/B Verification of Phase 27 Equations ([`ab_p26_vs_p27_control.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/ab_p26_vs_p27_control.py))
+Under identical 60-step `batch=4` local continuation on held-out `img3` & `BlueArchive 2021++`:
+- `A_P26Loss_Control`: `BA_PSNR=22.53`, `LowLap=4.70`, `CheekGrad=0.22`, `Halo=29.0`
+- **`B_P27Loss_Pure` (`Phase27` Loss + Freq-Decoupled Hybrid Target + Angle-Only Curve Smoothness):** `BA_PSNR=22.59`, `LowLap=4.73`, `CheekGrad=0.25 (+13.6%)`, `Halo=28.0` (and in 220-step `verify_p27_curve_and_blush_250steps.py`: `CheekGrad=0.23 -> 0.27`, `LowLap=4.88 -> 5.11`, `FlareSat=40.7 -> 38.4`). Note that full 7,500-iter Kaggle training with `VGGPerceptualLoss` and 350 Safebooru 4K images is required to prevent small-subset `Halo` drift (`23 -> 28`) and fully realize `Shuffled Bilinear` curve straightening.
+
+
 
 
 
