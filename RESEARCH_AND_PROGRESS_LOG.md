@@ -463,6 +463,66 @@ By replacing `0.85 * gt_t` non-edge dilution with **Full-Field Zero-Halo APISR T
 | **`Cheek_BlushLines`** | `Strong_v3` | 23.23 | 39.3 | 1.23 | 1.88 |
 | **`Cheek_BlushLines`** | `APISR_2x` | **20.02** | **36.2** | **0.55** | 0.00 |
 
+---
+
+## 12. Phase 26 (`XyetherLineFlow_v26_Final`) — Verified Cloud GPU, Real-World 3-Scene & 2020+ Modern Anime Benchmark
+
+### 12.1 Verified 4-Regime Benchmark (`phase26_metrics_report.json`, Kaggle v38 `COMPLETE`)
+
+| Scenario | Model | PSNR (dB) | SSIM | HL1 / HL2 Min | LapVar | MAE vs APISR | Halo Overshoot | Flat Checker |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Clean_LR`** | `Phase24_LineFlow_v2` | 29.69 | 0.9601 | 19 / 21 | 938.2 | 5.24 | -3 | 0.14 |
+| **`Clean_LR`** | `Phase25_LineFlow_v3` | 29.69 | 0.9601 | 17 / 18 | 958.4 | 5.11 | +1 | 0.12 |
+| **`Clean_LR`** | **`Phase26_LineFlow_v4`** | **29.22** | **0.9557** | **15 / 22** | **955.3** | **4.08 (-20.2%)** | **+2 (Zero Halo)** | **0.16** |
+| **`Clean_LR`** | `Strong_v3` | 28.19 | 0.9506 | 9 / 34 | 1058.3 | 5.00 | +18 | 0.32 |
+| **`Clean_LR`** | `APISR_4x_to_2x` (Teacher) | 27.09 | 0.9371 | 19 / 18 | 969.3 | 0.00 | +2 | 0.17 |
+| **`RealBlurry_LR`** | `Phase24_LineFlow_v2` | 29.06 | 0.9552 | 24 / 35 | 868.6 | 4.82 | -1 | 0.16 |
+| **`RealBlurry_LR`** | `Phase25_LineFlow_v3` | 28.98 | 0.9544 | 18 / 34 | 912.3 | 4.68 | -2 | 0.14 |
+| **`RealBlurry_LR`** | **`Phase26_LineFlow_v4`** | **28.53** | **0.9504** | **16 / 37** | **915.5** | **3.94 (-15.8%)** | **+0 (Zero Halo)** | **0.17** |
+| **`RealBlurry_LR`** | `Strong_v3` | 27.40 | 0.9349 | 9 / 37 | 1017.9 | 4.67 | +22 | 0.35 |
+| **`RealBlurry_LR`** | `APISR_4x_to_2x` (Teacher) | 27.36 | 0.9395 | 28 / 23 | 958.3 | 0.00 | +8 | 0.18 |
+| **`Harsh_Q62_LR`** | `Phase24_LineFlow_v2` | 28.15 | 0.9458 | 29 / 69 | 638.8 | 5.55 | +0 | 0.16 |
+| **`Harsh_Q62_LR`** | `Phase25_LineFlow_v3` | 27.99 | 0.9455 | 27 / 64 | 679.8 | 5.46 | +1 | 0.15 |
+| **`Harsh_Q62_LR`** | **`Phase26_LineFlow_v4`** | **27.58** | **0.9415** | **30 / 68** | **690.4** | **4.79 (-12.3%)** | **+3** | **0.17** |
+| **`Harsh_Q62_LR`** | `Strong_v3` | 25.71 | 0.9038 | 40 / 31 | 981.3 | 5.73 | +30 | 0.36 |
+| **`Harsh_Q62_LR`** | `APISR_4x_to_2x` (Teacher) | 26.21 | 0.9222 | 14 / 50 | 895.7 | 0.00 | +10 | 0.18 |
+| **`Shuffled_Reencode_LR`** | `Phase24_LineFlow_v2` | 28.43 | 0.9441 | 35 / 62 | 688.7 | 5.60 | +0 | 0.14 |
+| **`Shuffled_Reencode_LR`** | `Phase25_LineFlow_v3` | 28.46 | 0.9443 | 30 / 52 | 742.0 | 5.45 | -1 | 0.14 |
+| **`Shuffled_Reencode_LR`** | **`Phase26_LineFlow_v4`** | **28.21** | **0.9408** | **33 / 58** | **753.9** | **4.66 (-14.5%)** | **+1 (Zero Halo)** | **0.16** |
+| **`Shuffled_Reencode_LR`** | `Strong_v3` | 26.64 | 0.9096 | 22 / 34 | 1004.0 | 5.33 | +28 | 0.37 |
+| **`Shuffled_Reencode_LR`** | `APISR_4x_to_2x` (Teacher) | 26.42 | 0.9199 | 25 / 82 | 936.5 | 0.00 | +8 | 0.17 |
+
+### 12.2 Verified Evaluation on User's 3 Real-World Comparison Images ([`eval_p26_final_on_user_images_and_2020plus.py`](file:///d:/MODEL%20UPSCALE%20ME/scratch/eval_p26_final_on_user_images_and_2020plus.py))
+
+1. **Full-Panel Color Consolidation & Main-Outline Sharpness (`704x704 -> 1408x1408 -> 704x704`, [`p26_final_user_img3_full_comparison.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p26_final_user_img3_full_comparison.png)):**
+
+| Scene | Model | High-Contrast (`>=35` lv) Lap | Low-Contrast (`4..22` lv) Lap | Saturation (`HSV S`) | `MAE vs APISR` | Pixel Diff `>=4` vs `v25` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **`img0_sunlight`** | `LineFlow_v24` | 95.10 | 2.80 | 54.8 | 3.75 | 8.0% |
+| **`img0_sunlight`** | `LineFlow_v25` | 96.92 | 2.54 | 54.6 | 2.28 | 0.0% |
+| **`img0_sunlight`** | **`LineFlow_v26`** | **110.44** | **2.62** | **53.4** | **2.06 (Best)** | **33.0%** |
+| **`img0_sunlight`** | `Strong_v3` / `APISR` | 97.54 / 101.90 | 3.48 / 3.15 | 54.2 / **51.9** | 3.65 / 0.00 | 17.4% / 34.7% |
+| **`img1_dark_hall`** | `LineFlow_v24` | 78.72 | 3.58 | 35.1 | 2.95 | 7.3% |
+| **`img1_dark_hall`** | `LineFlow_v25` | 80.83 | 3.40 | 35.2 | 2.00 | 0.0% |
+| **`img1_dark_hall`** | **`LineFlow_v26`** | **90.85** | **3.69** | **33.2** | **1.66 (Best)** | **18.2%** |
+| **`img1_dark_hall`** | `Strong_v3` / `APISR` | 84.07 / 87.69 | 5.19 / 4.57 | 35.8 / **31.6** | 2.76 / 0.00 | 12.2% / 21.7% |
+| **`img3_hair_flare`** | `LineFlow_v24` | 67.84 | 3.03 | 41.5 | 3.83 | 6.9% |
+| **`img3_hair_flare`** | `LineFlow_v25` | 75.52 | 1.95 | 41.5 | 2.01 | 0.0% |
+| **`img3_hair_flare`** | **`LineFlow_v26`** | **85.85** | 1.87 | **39.4** | **1.80 (Tied Best)** | **27.7%** |
+| **`img3_hair_flare`** | `Strong_v3` / `APISR` | 81.11 / 80.41 | 3.06 / 2.82 | 39.8 / **37.7** | 1.80 / 0.00 | 9.7% / 25.0% |
+
+2. **Native 2x Hotspots on Image (3) (`160x160 -> 320x320`, [`p26_final_user_img3_native2x.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p26_final_user_img3_native2x.png)):**
+   - **`TopRight_HairFlare`:** `MAE_vs_APISR` dropped `3.12 (v24) -> 3.08 (v25) -> 2.71 (v26)`, `Warm(RG-B): 11.67 -> 11.44`, `Sat: 41.3 -> 40.7`.
+   - **`TopLeft_HairStrands`:** `Sat` consolidated `35.7 (v24) -> 35.5 (v25) -> 33.0 (v26)` (`Strong_v3 = 31.8, APISR = 30.8`), `Warm: -5.73 -> -5.32` (`APISR = -5.28`), `MAE_vs_APISR: 2.32 -> 1.83 (-21.1%)`.
+   - **`MidBangs_LightEdge`:** `Sat` consolidated `26.3 (v24) -> 26.1 (v25) -> 24.4 (v26)` (`Strong_v3 = 23.9, APISR = 21.2`), `MAE_vs_APISR: 2.66 -> 2.08 (-21.8%, beating Strong_v3 = 2.13)`.
+   - **`Cheek_BlushLines`:** `Warm: 21.91 -> 20.34` (`APISR = 20.02`), `Sat: 39.0 -> 37.4` (`APISR = 36.2`), `MAE_vs_APISR: 1.55 -> 1.18 (-23.9%, beating Strong_v3 = 1.88)`.
+
+3. **Teacher 2x Downsampling Bottleneck Discovery (`task-9447`):**
+   - While `Phase26_LineFlow_v4` achieved the best color consolidation (`MAE_vs_APISR` reduced by `12%–24%` across all scenes and surpassing `Strong_v3`) and the highest high-contrast line sharpness (`HighContrast Lap = 110.44, 90.85, 85.85`), 1px low-contrast micro-lines (`4..22` RGB levels such as faint pastel cheek blush lines) remained softer in full-dataset training than in native-scale prototype training (`Cheek Grad1px = 0.23` vs `0.51`).
+   - **Verified Mathematical Root Cause (`task-9447`):** Inside `Phase23ZeroHaloAPISRTeacher.forward(hr_tensor)`, `ap_t` is generated from a **2x-downsampled** version of `gt_t` (`lr_clean = F.avg_pool2d(gt_t, 2, 2) -> APISR(80x80) -> avg_pool2d(2, 2)`). Downsampling `gt_t` (`160x160`) to `80x80` via `2x2` box averaging halves the contrast of 1px micro-lines (`4..14` levels $\rightarrow$ `2..7` levels), causing `APISR(80x80)` to smooth them out in `ap_t` (`Tar_P26 LowContrast Lap = 3.92` vs `Tar_Old = 4.24`), AND 78% of `AnimeOTFDataset` applies heavy blur/WebP degradation to `lr_patch` that teaches the student to treat `4..12` level fluctuations as compression noise.
+   - **Next-Phase Solution (Frequency-Decoupled Hybrid Target for Phase 27 if desired):** Take **low-frequency base color & light-flare consolidation (`F.avg_pool2d(ap_t, 5, 1, 2)`) + high-contrast edges (`strong_edge * ap_no_halo`) from `APISR`**, while injecting **high-frequency micro-detail residual (`gt_t - F.avg_pool2d(gt_t, 5, 1, 2)`) from `160x160` native `gt_t`** inside the `4..24` RGB-level micro-detail band!
+
+
 
 
 
