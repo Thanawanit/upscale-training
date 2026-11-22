@@ -160,8 +160,8 @@ class AnimeOTFDataset(Dataset):
                 hr_patch = self._reflect_warm_cool_bgr(hr_patch)
         hr_patch = np.ascontiguousarray(hr_patch)
 
-        # 3. Phase 25 APISR-Inspired 4-Regime Anime Degradation:
-        #    (22% Clean/Mild + 38% Medium Stream + 22% Harsh Q52..74 + 18% Shuffled-Resize Multi-Codec JPEG/WebP)
+        # 3. Phase 27 APISR + Curve-Jitter 4-Regime Anime Degradation:
+        #    (20% Clean/Mild + 30% Medium Stream + 20% Harsh Q52..74 + 30% Shuffled-Resize Curve-Jitter Multi-Codec)
         lr_patch = hr_patch.copy()
         lr_h = self.patch_size // 2
         lr_w = self.patch_size // 2
@@ -175,26 +175,26 @@ class AnimeOTFDataset(Dataset):
                 ok, enc = cv2.imencode('.jpg', im, [int(cv2.IMWRITE_JPEG_QUALITY), q])
             return cv2.imdecode(enc, cv2.IMREAD_COLOR) if ok else im
 
-        if regime < 0.22:
+        if regime < 0.20:
             # Clean / Mild regime
             if random.random() < 0.45:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=cv2.INTER_AREA)
             if random.random() < 0.20:
                 lr_patch = apply_codec(lr_patch, 88, 96, webp_p=0.25)
-        elif regime < 0.60:
-            # Medium RealBlurry / 2020+ Stream 1080p regime
+        elif regime < 0.50:
+            # Medium RealBlurry / 2021+ Stream 1080p regime
             lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.45, sigma_max=1.10)
             interp = random.choices(
                 [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC],
-                weights=[0.60, 0.22, 0.18]
+                weights=[0.55, 0.25, 0.20]
             )[0]
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
             if random.random() < 0.40:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.45)
             if random.random() < 0.85:
                 lr_patch = apply_codec(lr_patch, 68, 92, webp_p=0.30)
-        elif regime < 0.82:
+        elif regime < 0.70:
             # Harsh Compressed Web / Stream regime (kills Q62 mush & 4:2:0 dark-fill chroma bleed)
             sx = random.uniform(0.60, 1.35)
             sy = random.uniform(0.55, 1.30)
@@ -210,14 +210,14 @@ class AnimeOTFDataset(Dataset):
             if random.random() < 0.30:
                 lr_patch = apply_codec(lr_patch, 68, 88, webp_p=0.40)
         else:
-            # APISR Shuffled-Resize & Prediction-Oriented Multi-Codec Re-encode regime
-            s_inter = random.uniform(0.62, 1.22)
+            # Shuffled-Resize & Bilinear/Cubic Curve-Jitter Multi-Codec Re-encode regime (30%)
+            s_inter = random.uniform(0.58, 1.25)
             ih = max(lr_h, int(round(self.patch_size * s_inter)))
             iw = max(lr_w, int(round(self.patch_size * s_inter)))
-            interp1 = random.choice([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA])
+            interp1 = random.choices([cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA], weights=[0.45, 0.35, 0.20])[0]
             interp2 = random.choices(
                 [cv2.INTER_AREA, cv2.INTER_CUBIC, cv2.INTER_LINEAR],
-                weights=[0.45, 0.35, 0.20]
+                weights=[0.40, 0.35, 0.25]
             )[0]
             if random.random() < 0.50:
                 lr_patch = cv2.resize(lr_patch, (iw, ih), interpolation=interp1)

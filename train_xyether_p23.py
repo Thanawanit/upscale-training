@@ -26,6 +26,7 @@ from losses.xyether_losses import (
     Phase24LineFlowLoss,
     Phase25LineFlowLoss,
     Phase26LineFlowLoss,
+    Phase27LineFlowLoss,
     VGGPerceptualLoss,
 )
 
@@ -187,8 +188,11 @@ def train_p23(args) -> None:
     teacher = Phase23ZeroHaloAPISRTeacher(
         onnx_path=args.teacher_onnx_path,
         full_color_consolidation=(args.loss_version >= 26),
+        freq_micro_rescue=(args.loss_version >= 27),
     ).to(device)
-    if args.loss_version >= 26:
+    if args.loss_version >= 27:
+        criterion = Phase27LineFlowLoss().to(device)
+    elif args.loss_version == 26:
         criterion = Phase26LineFlowLoss().to(device)
     elif args.loss_version == 25:
         criterion = Phase25LineFlowLoss().to(device)
