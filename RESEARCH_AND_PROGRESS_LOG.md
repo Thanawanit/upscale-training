@@ -760,4 +760,23 @@ Under identical 60-step `batch=4` local continuation on held-out `img3` & `BlueA
 - **Visual Inspection ([`p28_final_v28_vs_sota_2025plus.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p28_final_v28_vs_sota_2025plus.png)):**
   - `RepHybrid_v28` preserves authentic 2025++ warm taupe *irotore* lines (`2026_Frieren` — where `LineFlow_v27` & `APISR_2x` darkened them to black) and retains subtle low-contrast dots/hatching (`2025_Kusuriya`, `2025_ChainsawMan_Reze`) erased by `LineFlow_v27` & `APISR_2x`, while cutting checkerboard by `>60%` and maintaining crisp H.264 edges (`HiR = 1.84`). Note that on extreme synthetic `Harsh_Q62` single-image `test_anime.png` (`LapVar = 329.9` vs `v27 700.4`), `RepHybrid_v28` prioritizes cleaner fidelity over `v27`'s aggressive synthetic sharpening.
 
+### 16.3 User Visual Audit, Root-Cause Regression Diagnosis & Colab `P28b–e` Ablations
+- **Critical Regression Found Upon Side-by-Side User Visual Inspection & `XyetherEvaluator`:**
+  - Visually in `p28_final_v28_vs_sota_2025plus.png` and Kaggle `test_anime.png`, `RepHybrid_v28` looked **visibly softer and smudgier along H.264 edges** than `LineFlow_v27`:
+    - `XyetherEvaluator` `line_depth`: `LineFlow_v27 = 0.0` (deep pitch-black 1px lines) vs `RepHybrid_v28 = 26.53` (washed-out gray lines)
+    - `sharpness_lapvar`: `LineFlow_v27 = 957.1` vs `RepHybrid_v28 = 621.3` (`-35%`)
+    - `noise_residual_std`: `LineFlow_v27 = 15.93` vs `RepHybrid_v28 = 16.84`
+    - Kaggle 4-regime `LapVar` (`RealBlurry / Harsh_Q62 / Shuffled`): `v27 = 906.2 / 700.4 / 757.4` vs `v28 = 457.0 / 329.9 / 356.8`
+  - **Root Causes Proven:** (1) Training `RepHybrid64` from scratch after decaying warm-start to `0` at step 1,500 discarded `v27`'s `50,000+`-iter line reconstruction & `(1x9)+(9x1)` long-range continuity; (2) Pure-GT `l_pix + l_swt + VGG(gt_b)` dominated over `0.55` edge blend -> posterior-mean blur; (3) Weakening `l_cel` (`1.1 -> 0.45`) failed to suppress edge compression smudges.
+- **Controlled Colab T4 Continuation Ablations Starting Directly from `LineFlow_v27` (`P28b -> P28c -> P28d/e`):**
+  1. `P28b_Surgical` (`gt_b` on `is_deg==0` + `gt_y > 0.36` mask) & `P28c_PresCrisp` (`gt_chroma > 0.08` line mask): **BOTH still collapsed `line_depth` (`0.0 -> 33.7` / `27.29`) and `LapVar` (`957.1 -> 602.7` / `602.5`)** in 350–400 steps! Proven why: replacing `tar_y` with `gt_y` on *any* broad mask (`gt_chroma > 0.08` covers ~60–70% of tinted Safebooru line art, or `is_deg == 0` penalizes 1px darkening against anti-aliased GT `HL=67`) immediately erases `v27`'s 1px dark line restoration (`p28c_prescrisp_visual.jpg` blurred `solo_level` and `dandadan_3`).
+  2. **`P28e_Sharp110` (Continue directly from `LineFlow_v27`; keep 100% `tar_b` APISR structure/ink crispness `sharp_mult=1.10` everywhere + lock ONLY `l_chr` & `ColorLuvLoss` to `gt_b` + `1.2*l_micro_gt` inside `span 0.010..0.060` + keep `l_cel=1.1`):**
+     - `XyetherEvaluator`: **`line_depth = 0.0`** (preserved 100% pitch-black!), `overshoot_halo = 7.0685` (`-9.2%` vs `v27 = 7.7884`), `noise_residual_std = 15.90` (vs `15.93`), `sharpness_lapvar = 865.7`.
+     - **15 `>=2025` Sakugabooru Scenes (`P28e_Sharp110` vs `LineFlow_v27`):**
+       - `clean_2025`: `PSNR = 26.95` vs `26.70` | `SSIM = 0.8938` vs `0.8915` | `Halo = 17.1` vs `17.7` | `HiR = 1.60` vs `1.66` | `Chr = 7.23` vs `7.97` (`-9.3%`) | `Chk = 0.586` vs `0.640`
+       - `h264_yuv420`: `PSNR = 26.32` vs `26.11` | `SSIM = 0.8572` vs `0.8545` | `Halo = 17.4` vs `18.5` | `HiR = 1.32` vs `1.37` | `Chr = 8.67` vs `8.97`
+       - `curvejit_webp`: `PSNR = 26.80` vs `26.57` | `SSIM = 0.8776` vs `0.8760` | `Halo = 14.7` vs `15.6` | `HiR = 1.41` vs `1.47` | `Chr = 7.75` vs `8.15`
+     - **Visual (`p28de_visual.jpg`):** Restores full razor-sharp `solo_level` armor & `dandadan_3` lines matching `v27`/`APISR`, eliminates `APISR`'s white neon blowouts (`kaoru_hana`), keeps truer red hues (`dandadan_3`), and rescues subtle pink/red cross-hatching (`gachiakuta` chest) erased by both `v27` and `APISR_2x`.
+
+
 
