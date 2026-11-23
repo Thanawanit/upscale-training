@@ -797,6 +797,44 @@ Testing why `APISR_2x` maintains a visibly cleaner, smoother "re-inked vector" l
   1. **Unclipping `APISR` Teacher Alone + `Nearest(x)` Skip (`Arm1_v27_VecGAN`)** raises `HiR` above `v27` (`1.37 -> 1.47` H.264) and makes specular/vector highlights pop visually, **but** doubles Halo (`18.5 -> 32.9`) and still cannot eliminate `Nearest(x)` pixel staircasing & H.264 curve roughness compared to `APISR_2x` (`LPIPS h264: 0.1823 vs 0.1672`).
   2. **`4x -> 2x` SSAA + Bilinear Base (`Arm2_SSAA72_GAN`)** slashes Checkerboard to the lowest of ALL models (`0.442–0.565` vs `APISR 0.826–1.275`), lifts `LowR` to `0.90–1.03`, and beats `APISR_2x` on `clean_2025` `LPIPS` (`0.1046 vs 0.1480`) in only 350 random-init steps — proving `Bilinear + 4x->2x SSAA` is the structural key to matching/surpassing `APISR`'s smooth vector aesthetic once trained longer (`3,500–7,500` iters) with H.264-degraded input supervision and bounded Halo (`<= +12`).
 
+### 16.5 Returning to `LineFlow_v27` Lineage (`Keep8B` & `Pruned6B_Leaky`) + Colab T4 ONNX Speedup
+Following user feedback rejecting new random/distilled `RepHybrid` blur and directing us back to **`XyetherLineFlow_v27_Final.pth` weights as base** with **`APISR_2x`-like crisp vector quality** and **faster Colab T4 ONNX runtime**, we tested three `LineFlow_v27`-initialized variants on Colab Tesla T4:
+
+#### A. Colab T4 ONNX `CUDAExecutionProvider` Latency (`540x960 -> 1080x1920`) & Parity
+- `lineflow_v27_fp32.onnx` (`2.08 MB`, `8b PReLU`): **`277.5 ms`** | parity `max=0.00000 mean=0.000000`
+- `lineflow_v27_fp16.onnx` (`1.06 MB`, `8b PReLU`): **`242.1 ms`** (`-12.8%`) | parity `max=0.00034 mean=0.000100`
+- `keep8b_vecclean_fp16.onnx` (`1.06 MB`, `8b PReLU`): **`243.0 ms`** (`-12.4%`) | parity `max=0.00030 mean=0.000093`
+- **`pruned6b_vecclean_fp16.onnx`** (`0.81 MB`, **`6b` `{0,1,4,5,6,7}` + `PReLU -> LeakyReLU`**): **`187.9 ms`** (**`-32.3%` faster vs `v27 FP32`, `12.5x` faster than `APISR_4x`**, `-61%` file size) | parity `max=0.00032 mean=0.000089`
+- `APISR_4x_fp32.onnx` (`6.49 MB`, `540p -> 2160p`): **`2,354.6 ms`** on same T4 `CUDAExecutionProvider`
+
+#### B. Synthetic Sharpness (`XyetherEvaluator`) & 15-Scene (`1080p`, `clean / h264_yuv420 / curvejit_webp`) Comparison
+- `LineFlow_v27` (`Synth`): `line_depth = 0.0`, `overshoot_halo = 7.7884`, `sharpness_lapvar = 957.1`
+  - `clean_2025`: `PSNR=29.08 SSIM=0.9241 LPIPS=0.1301 | Halo=16.3 | LowR=0.91 HiR=1.74 | Chr=5.36 Chk=0.655`
+  - `h264_yuv420`: `PSNR=28.96 SSIM=0.9062 LPIPS=0.1563 | Halo=15.1 | LowR=0.76 HiR=1.07 | Chr=6.49 Chk=0.765`
+  - `curvejit_webp`: `PSNR=28.52 SSIM=0.9124 LPIPS=0.1468 | Halo=18.8 | LowR=0.93 HiR=1.69 | Chr=5.86 Chk=0.687`
+- `Keep8B_VecClean` (`400` steps `Unclipped APISR + 1.4*l_cel + 2.5*l_halo(max3+0.002) + 0.45*LPIPS + 0.08*PatchGAN`):
+  - `Synth`: `line_depth = 0.0`, `overshoot_halo = 12.7912`, `sharpness_lapvar = 786.3`
+  - `clean_2025`: `PSNR=28.13 SSIM=0.9098 LPIPS=0.1456 | Halo=30.9 | LowR=1.06 HiR=1.80 | Chr=7.30 Chk=0.707`
+  - `h264_yuv420`: `PSNR=28.48 SSIM=0.8975 LPIPS=0.1663 | Halo=26.3 | LowR=0.91 HiR=1.15 | Chr=8.17 Chk=0.740`
+  - `curvejit_webp`: `PSNR=27.94 SSIM=0.9031 LPIPS=0.1586 | Halo=30.3 | LowR=1.05 HiR=1.76 | Chr=7.40 Chk=0.704`
+- `Pruned6B_VecClean` (`6b Leaky` init from `v27`, `450` steps same loss):
+  - `Synth`: `line_depth = 0.0`, `overshoot_halo = 15.9520`, `sharpness_lapvar = 630.9`
+  - `clean_2025`: `PSNR=27.89 SSIM=0.9078 LPIPS=0.1496 | Halo=31.5 | LowR=1.25 HiR=1.79 | Chr=7.62 Chk=0.721`
+  - `h264_yuv420`: `PSNR=28.38 SSIM=0.8941 LPIPS=0.1711 | Halo=26.5 | LowR=1.05 HiR=1.10 | Chr=8.28 Chk=0.743`
+  - `curvejit_webp`: `PSNR=27.77 SSIM=0.9013 LPIPS=0.1614 | Halo=30.9 | LowR=1.22 HiR=1.74 | Chr=7.69 Chk=0.720`
+- `Pruned6B_SharpVec` (`6b Leaky`, `450` steps, flat-masked `l_cel`, `+2.5*|Laplacian|`, `lr=2.2e-4`, no EMA):
+  - `Synth`: `line_depth = 0.0`, `overshoot_halo = 15.0116`, `sharpness_lapvar = 621.0`
+  - `clean_2025`: `PSNR=27.91 SSIM=0.9087 LPIPS=0.1498 | Halo=31.7 | LowR=1.21 HiR=1.79 | Chr=7.72 Chk=0.711`
+  - `h264_yuv420`: `PSNR=28.33 SSIM=0.8951 LPIPS=0.1715 | Halo=26.9 | LowR=1.02 HiR=1.11 | Chr=8.48 Chk=0.736`
+  - `curvejit_webp`: `PSNR=27.77 SSIM=0.9024 LPIPS=0.1617 | Halo=31.0 | LowR=1.18 HiR=1.74 | Chr=7.78 Chk=0.708`
+- `APISR_2x` Reference (`h264_yuv420` 15 scenes):
+  - `PSNR=27.19 SSIM=0.8868 LPIPS=0.1675 | Halo=37.6 | LowR=1.22 HiR=1.50 | Chr=8.26 Chk=0.723`
+
+#### C. Visual & Root-Cause Conclusions (`p28_vecclean_compare.jpg` & `p28_sharpvec_compare.jpg`)
+1. **No Sharpness Collapse:** Unlike random-init `RepHybrid_v28` (`line_depth = 26.53`), ALL `v27`-initialized runs (including `Pruned6B_Leaky`) kept **`line_depth = 0.0`** cleanly while trimming T4 ONNX latency `-32.3%` (`277.5 ms -> 187.9 ms`).
+2. **Real but Incremental Vector Improvement on 450 Short Steps (`72` patches):** In edge-rich H.264 crops (`p28_sharpvec_compare.jpg` `sb_04`, `sb_12` eye/hair), `Keep8B_VecClean` & `Pruned6B` thinned H.264 halo smudges and improved `LowR` (`0.76 -> 1.05`) + `HiR` (`1.07 -> 1.15`) + `Chk` (`0.765 -> 0.736`) over `LineFlow_v27`.
+3. **Honest Gap Remaining vs `APISR_2x`:** Short `400–450` steps on only `72` `APISR(clean)` patches (without EMA) did **not** yet reach `APISR_2x`'s extreme H.264 line crispness (`HiR = 1.50`, `sb_12` razor eyelashes), while unmasked `l_cel=1.4` damped synthetic `LapVar` (`957 -> 631`). Closing that remaining visual gap on Kaggle requires full-duration (`5,000–7,500` iters) training from `v27` / `Pruned6B_Leaky` on `300+` dynamic-crop Safebooru frames with EMA + **H.264/CurveJit inputs matched against `APISR(clean HR)`** (never `APISR(degraded LR)`)!
+
 
 
 
