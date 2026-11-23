@@ -731,3 +731,33 @@ Under identical 60-step `batch=4` local continuation on held-out `img3` & `BlueA
   2. **`RepHybrid64` Delivers `3.4x` Speed + `<50%` Peak VRAM Over `LineFlow_v27`:** Even at `64ch` (`574,604` deploy params vs `514,148`), `RepHybrid64` ran `74.9 ms / 764 MB` (`540p`) and `311.6 ms / 1570 MB` (`1080p->4K`), beating `v27` (`249.0 ms / 1232 MB` and `1062.0 ms / 3437 MB`) by `3.32x–3.41x`, while jumping `+8.30 dB` Clean PSNR (`34.91` vs `26.61`), beating `AniSD_SPAN` (`33.66`) on Clean PSNR/SSIM/LPIPS/Halo/ChrMAE, and cutting `irotore` color drift by `-73%` (`Chr=1.97` vs `v27 7.22` and `APISR 10.24`).
   3. **Proven Trade-off Requiring Hybrid Loss for Full Phase 28:** Pure GT supervision (`100% GT`, `0% APISR`) — even with `1.05x` Laplacian crispness — still converges toward blurry posterior-mean averages on heavily degraded `h264_yuv420` & `curvejit_webp` (`HiR=0.70–0.76`, matching `AnimeSharpV4_PU`'s `0.69–0.75`), and our `Phase28SWTCrispLoss` over-weighted flat/low-contrast pixels downward (`LowR=0.47–0.58`, noticeably smoothing smoky gradients in `solo_leveling`). Visually on `kusuriya` (Row 4), `v27_Base` & `APISR_2x` darkened warm lashes/hairlines while `P28_v27_SWT` & `RepHyb64_SWT` preserved natural bright *irotore* fidelity. Therefore, Phase 28 full training requires **Degradation-Gated Hybrid Supervision** (`100% GT` for clean/mild, `Zero-Halo APISR Edge Valley Anchor` gated strictly to `reg >= 0.25` high-contrast edges + `Low-Contrast 4..22` protection to lift `LowR >= 0.85` while keeping `HiR ~ 1.0–1.25` under H.264).
 
+---
+
+## 16. Phase 28 (`XyetherRepHybrid_v28`) — Kaggle v40 Training & 2025++ Verification
+
+### 16.1 Training Run & Artifacts (`Kaggle Kernel v40`)
+- **Status:** `COMPLETE` (`7,500 / 7,500` iterations in `10,028.2s` / `2.79h` on Kaggle GPU; `loss = 2.3064`, `l_warm` decayed cleanly to `0.0000`).
+- **Architecture:** `XyetherRepHybridNet(num_feat=64, num_blocks=10, k5_indices=(2,5,8))` (`727,628` train params -> **`574,604` fused deploy params**), warm-started from our own `XyetherLineFlow_v27_Final.pth` (`1,500` cosine-decayed iters).
+- **Checkpoints & Reports Archived Locally ([`checkpoints/Phase28_XyetherRepHybrid_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase28_XyetherRepHybrid_v1/)):**
+  - `XyetherRepHybrid_v28_Final.pth` (`5,864,745` bytes — resumable multi-branch weights)
+  - `XyetherRepHybrid_v28_Final_Deploy.pth` (`2,308,455` bytes — fused single-conv weights)
+  - `XyetherRepHybrid_v28_Final.onnx` (`2,304,610` bytes — fused deploy graph)
+  - `phase28_metrics_report.json` (`48,733` bytes)
+- **ONNX Parity & CPU Speed:**
+  - Kaggle T4 ONNX parity: `max_abs_diff = 5.36e-07`
+  - Local CPU ONNX latency (`256x256 -> 512x512`, `intra_op_num_threads=4`): **`459.8 ms`** (`2.0x` faster than `LineFlow_v27` `901.3–981.0 ms`; Colab T4 FP16 benchmark `3.32x–3.41x` faster & `-54.3%` 4K VRAM).
+
+### 16.2 Real 17-Scene 2025++ Anime Benchmark (`clean_540p`, `h264_yuv420`, `curvejit_webp`)
+| Regime | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `ChrMAE` $\downarrow$ | `Checker` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`clean_540p`** | `LineFlow_v27` | 27.50 | 0.9220 | 14.8 | 0.94 | 2.70 | 5.11 | 1.024 |
+| **`clean_540p`** | **`RepHybrid_v28`** | **32.56** (`+5.06`) | **0.9604** | **11.3** | 0.81 | **2.04** | **2.39** (`-53%`) | **0.403** (`-61%`) |
+| **`h264_yuv420`** | `LineFlow_v27` | 27.16 | 0.9054 | 16.4 | 0.70 | 2.48 | 5.84 | 0.764 |
+| **`h264_yuv420`** | **`RepHybrid_v28`** | **30.77** (`+3.61`) | **0.9266** | **16.1** | 0.68 | **1.84** | **4.99** | **0.272** (`-64%`) |
+| **`curvejit_webp`** | `LineFlow_v27` | 27.54 | 0.9189 | 13.5 | 0.73 | 2.58 | 5.39 | 0.913 |
+| **`curvejit_webp`** | **`RepHybrid_v28`** | **31.58** (`+4.04`) | **0.9462** | **11.9** | 0.66 | **1.97** | **4.53** | **0.352** (`-61%`) |
+
+- **Visual Inspection ([`p28_final_v28_vs_sota_2025plus.png`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p28_final_v28_vs_sota_2025plus.png)):**
+  - `RepHybrid_v28` preserves authentic 2025++ warm taupe *irotore* lines (`2026_Frieren` — where `LineFlow_v27` & `APISR_2x` darkened them to black) and retains subtle low-contrast dots/hatching (`2025_Kusuriya`, `2025_ChainsawMan_Reze`) erased by `LineFlow_v27` & `APISR_2x`, while cutting checkerboard by `>60%` and maintaining crisp H.264 edges (`HiR = 1.84`). Note that on extreme synthetic `Harsh_Q62` single-image `test_anime.png` (`LapVar = 329.9` vs `v27 700.4`), `RepHybrid_v28` prioritizes cleaner fidelity over `v27`'s aggressive synthetic sharpening.
+
+
