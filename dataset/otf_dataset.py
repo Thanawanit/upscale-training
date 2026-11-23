@@ -22,9 +22,10 @@ class AnimeOTFDataset(Dataset):
        compression (75%) and exact Luma-Preserving Warm<->Cool reflection (R <-> C) so both Warm R
        and Cool GB sub-trunks learn wide-radius 4:2:0 de-JPEG while keeping dark ink outlines 100% invariant.
     """
-    def __init__(self, data_dir: str, patch_size: int = 192, repeat: int = 20):
+    def __init__(self, data_dir: str, patch_size: int = 192, repeat: int = 20, return_regime: bool = False):
         self.patch_size = patch_size
         self.repeat = repeat
+        self.return_regime = return_regime
 
         data_path = Path(data_dir)
         valid_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
@@ -167,6 +168,11 @@ class AnimeOTFDataset(Dataset):
         lr_w = self.patch_size // 2
         regime = random.random()
 
+        def apply_yuv420(im):
+            if im.shape[0] % 2 == 0 and im.shape[1] % 2 == 0:
+                return cv2.cvtColor(cv2.cvtColor(im, cv2.COLOR_BGR2YUV_I420), cv2.COLOR_YUV2BGR_I420)
+            return im
+
         def apply_codec(im, q_lo, q_hi, webp_p=0.35):
             q = random.randint(q_lo, q_hi)
             if random.random() < webp_p:
@@ -176,6 +182,7 @@ class AnimeOTFDataset(Dataset):
             return cv2.imdecode(enc, cv2.IMREAD_COLOR) if ok else im
 
         if regime < 0.20:
+            regime_id = 0
             # Clean / Mild regime
             if random.random() < 0.45:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
@@ -183,7 +190,8 @@ class AnimeOTFDataset(Dataset):
             if random.random() < 0.20:
                 lr_patch = apply_codec(lr_patch, 88, 96, webp_p=0.25)
         elif regime < 0.50:
-            # Medium RealBlurry / 2021+ Stream 1080p regime
+            regime_id = 1
+            # Medium RealBlurry / 2025+ Stream 1080p YUV 4:2:0 regime
             lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.45, sigma_max=1.10)
             interp = random.choices(
                 [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC],
@@ -192,10 +200,12 @@ class AnimeOTFDataset(Dataset):
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
             if random.random() < 0.40:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.45)
+            lr_patch = apply_yuv420(lr_patch)
             if random.random() < 0.85:
                 lr_patch = apply_codec(lr_patch, 68, 92, webp_p=0.30)
         elif regime < 0.70:
-            # Harsh Compressed Web / Stream regime (kills Q62 mush & 4:2:0 dark-fill chroma bleed)
+            regime_id = 2
+            # Harsh Compressed Web / Stream YUV 4:2:0 regime
             sx = random.uniform(0.60, 1.35)
             sy = random.uniform(0.55, 1.30)
             lr_patch = cv2.GaussianBlur(lr_patch, (0, 0), sigmaX=sx, sigmaY=sy)
@@ -206,10 +216,12 @@ class AnimeOTFDataset(Dataset):
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
             if random.random() < 0.40:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
+            lr_patch = apply_yuv420(lr_patch)
             lr_patch = apply_codec(lr_patch, 52, 74, webp_p=0.35)
             if random.random() < 0.30:
                 lr_patch = apply_codec(lr_patch, 68, 88, webp_p=0.40)
         else:
+            regime_id = 3
             # Shuffled-Resize & Bilinear/Cubic Curve-Jitter Multi-Codec Re-encode regime (30%)
             s_inter = random.uniform(0.58, 1.25)
             ih = max(lr_h, int(round(self.patch_size * s_inter)))
@@ -231,6 +243,8 @@ class AnimeOTFDataset(Dataset):
                 lr_patch = apply_codec(lr_patch, 62, 84, webp_p=0.45)
                 lr_patch = cv2.resize(lr_patch, (iw, ih), interpolation=interp1)
                 lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp2)
+            if random.random() < 0.65:
+                lr_patch = apply_yuv420(lr_patch)
             lr_patch = apply_codec(lr_patch, 58, 82, webp_p=0.55)
 
         # Convert to RGB float [0, 1]
@@ -244,4 +258,6 @@ class AnimeOTFDataset(Dataset):
         hr_tensor = torch.from_numpy(hr_rgb.transpose(2, 0, 1).copy())
         lr_tensor = torch.from_numpy(lr_rgb.transpose(2, 0, 1).copy())
 
+        if self.return_regime:
+            return lr_tensor, hr_tensor, torch.tensor(regime_id, dtype=torch.long)
         return lr_tensor, hr_tensor

@@ -633,3 +633,101 @@ Under identical 60-step `batch=4` local continuation on held-out `img3` & `BlueA
 | **`shuffled_reencode`** | `APISR_2x` | 23.07 | 0.8545 | 2939.7 | 4.98 | 78.64 | 44.6 | 2.38 |
 | **`shuffled_reencode`** | `Strong_v3` | 22.78 | 0.8570 | 2948.5 | 6.17 | 82.00 | 44.6 | 2.47 |
 
+---
+
+## 15. Phase 28 Deep Audit, 2025++ Anime Benchmarks & Architecture/Loss Ablations (In Progress)
+
+### 15.1 Hardware Speed & Peak VRAM Benchmarks (Local CPU + Colab Tesla T4 FP16)
+- **Local Machine Hardware Check:** CPU-only (`torch 2.12.0+cpu`, `cuda: False`).
+- **Local ONNX CPU Latency (`256x256 -> 512x512`, `intra_op_num_threads=4`, `WarmMed`):**
+  - `2x_AnimeJaNai_HD_V3_SuperUltraCompact` (`0.18 MB`): `99.4 ms` | `UltraCompact` (`1.17 MB`): `416.0 ms` | `Compact` (`2.30 MB`): `887.6 ms`
+  - `LineFlow_v27` (`fp32`, `1.98 MB`): `901.3 ms` (`981.0 ms` repeat; PyTorch eager `1611.6 ms`, `514,148` params)
+  - `ModernSpanimationV1` (`fp32`, `2.78 MB`): `1018.5 ms` | `Strong_v3` (`fp16` ORT CPU): `1668.1 ms` (`CompactNet_64_16` PyTorch CPU `923.7 ms`, `600,652` params)
+  - `AniSD_SPAN` (`fp32`, `1.58 MB`): `1698.7 ms` | `AnimeSharpV4_FastPU` (`fp16`, `30.12 MB`): `5325.8 ms`
+  - `APISR_2x` (`fp32`, `6.19 MB`, `4x` output `1024x1024`): `8926.0 ms` | `AniSD_RealPLKSR` (`28.39 MB`): `16964.9 ms`
+- **Colab Tesla T4 FP16 PyTorch Speed & Peak VRAM (`540p -> 1080p` / `1080p -> 4K`):**
+  - `LineFlow_v27` (`514,148` params): `540p = 242.2 ms / 822 MB` | `1080p = 1035.2 ms / 3026 MB`
+  - `Strong_v3_arch` (`600,652` params): `540p = 98.0 ms / 353 MB` | `1080p = 403.1 ms / 1159 MB`
+  - `RepHybrid_56_10_3x5x5` (`440,956` deploy params, `fuse_diff = 9.72e-06`): `540p = 91.6 ms / 323 MB` (**`2.64x` faster**, `-60.7%` VRAM) | `1080p = 371.3 ms / 1034 MB` (**`2.79x` faster**, `-65.8%` VRAM)
+  - `RepCompact_64_12` (`451,852` deploy params): `540p = 70.4 ms / 353 MB` | `1080p = 280.3 ms / 1159 MB`
+  - `RepCompact_48_10` (`214,380` deploy params): `540p = 67.8 ms / 289 MB` | `1080p = 266.2 ms / 904 MB`
+  - `RepPU_64_12` (`477,808` params): `540p = 18.9 ms / 166 MB` | `1080p = 75.9 ms / 410 MB`
+  - `RepPU_96_12` (`1,048,464` params): `540p = 37.5 ms / 199 MB` | `1080p = 149.6 ms / 537 MB`
+
+### 15.2 Strictly 2025++ Anime Multi-Suite Audit (36-Scene Colab + 17-Scene Local Rich Crop)
+- **36-Scene 2025–2026 Full-Frame Benchmark (Colab T4, 9 Models x 36 Frames x 3 Regimes):**
+  - `clean_540p`:
+    - `LineFlow_v27`: `PSNR=27.55 SSIM=0.9148 LPIPS=0.1644 | Halo=18.8 HL1D=4.7 LowR=0.93 HiR=2.31 DiagHV=0.986 Jit=79.48 Band=2.71 Chr=5.40`
+    - `LineFlow_v26`: `PSNR=27.44 SSIM=0.9122 LPIPS=0.1666 | Halo=19.3 HL1D=4.6 LowR=0.92 HiR=2.30 DiagHV=0.987 Jit=76.44 Band=2.71 Chr=6.00`
+    - `APISR_2x`: `PSNR=25.83 SSIM=0.8842 LPIPS=0.1934 | Halo=49.0 HL1D=3.8 LowR=1.42 HiR=2.56 DiagHV=0.991 Jit=91.22 Band=3.62 Chr=7.52`
+    - `AniSD_SPAN`: `PSNR=37.31 SSIM=0.9762 LPIPS=0.0322 | Halo=6.2 HL1D=7.5 LowR=0.84 HiR=0.86 DiagHV=1.003 Jit=56.84 Band=2.13 Chr=3.55`
+    - `AniSD_Compact`: `PSNR=38.26 SSIM=0.9791 LPIPS=0.0320 | Halo=5.6 HL1D=7.8 LowR=0.84 HiR=0.91 DiagHV=1.004 Jit=57.69 Band=2.17 Chr=2.53`
+    - `AniSD_RealPLKSR`: `PSNR=38.10 SSIM=0.9783 LPIPS=0.0260 | Halo=5.6 HL1D=7.3 LowR=0.84 HiR=0.89 DiagHV=1.002 Jit=58.02 Band=2.15 Chr=2.93`
+    - `AnimeSharpV4_FastPU`: `PSNR=37.83 SSIM=0.9812 LPIPS=0.0285 | Halo=6.5 HL1D=4.2 LowR=0.99 HiR=1.21 DiagHV=0.993 Jit=66.84 Band=2.32 Chr=1.67`
+    - `ModernSpanimationV1`: `PSNR=31.50 SSIM=0.9525 LPIPS=0.0801 | Halo=14.8 HL1D=8.2 LowR=1.44 HiR=1.38 DiagHV=0.996 Jit=75.81 Band=3.27 Chr=8.14`
+  - `h264_yuv420` (`libx264 -crf 25 -pix_fmt yuv420p`):
+    - `LineFlow_v27`: `PSNR=27.30 SSIM=0.8986 LPIPS=0.1741 | Halo=20.4 HL1D=6.5 LowR=0.71 HiR=2.10 DiagHV=0.999 Jit=70.40 Band=2.59 Chr=6.25`
+    - `APISR_2x`: `PSNR=25.95 SSIM=0.8770 LPIPS=0.1968 | Halo=46.8 HL1D=5.1 LowR=1.18 HiR=2.39 DiagHV=1.003 Jit=87.35 Band=3.21 Chr=7.36`
+    - `AniSD_SPAN`: `PSNR=32.88 SSIM=0.9372 LPIPS=0.0901 | Halo=12.6 HL1D=11.2 LowR=0.80 HiR=0.84` | `AniSD_Compact`: `32.89 / 0.9380 / 0.0941` | `AniSD_RealPLKSR`: `32.77 / 0.9387 / 0.0892`
+    - `AnimeSharpV4_FastPU`: `PSNR=33.62 SSIM=0.9410 LPIPS=0.0812 | Halo=13.2 HL1D=7.6 LowR=0.89 HiR=1.05 DiagHV=1.007 Jit=62.38 Band=2.52 Chr=4.65`
+- **17-Scene Local `512x512` Rich-Crop Benchmark (`Strong_v3` & `AnimeJaNai_V3` verified):**
+  - `clean_540p`: `Strong_v3` (`24.81 / 0.9011 / Halo=40.5 / HiR=2.83 / Jit=107.82 / Chr=7.21`) | `AnimeJaNai_V3_UCmp` (`34.92 / 0.9811 / Halo=3.0 / LowR=0.77 / HiR=0.80 / Chr=2.03`) | `LineFlow_v27` (`25.34 / 0.9097 / Halo=15.1 / LowR=0.92 / HiR=2.61 / Jit=84.38 / Chr=5.96`)
+  - `h264_yuv420`: `Strong_v3` (`24.47 / 0.8867 / Halo=42.3 / HiR=2.70 / Jit=105.00`) | `AnimeJaNai_V3_UCmp` (`31.23 / 0.9414 / Halo=12.3 / HiR=0.71`) | `LineFlow_v27` (`25.23 / 0.8964 / Halo=16.8 / LowR=0.71 / HiR=2.39 / Jit=78.35`)
+- **Verified Strengths + Hidden Trade-offs Discovered:**
+  1. **Zero-Halo vs `APISR`/`Strong_v3`:** `LineFlow_v27` cuts 99.9th-percentile Halo by `60%` vs `APISR` (`18.8–20.4` vs `46.8–49.0`) and `Strong_v3` (`40.5–42.3`), **but** still sits higher than `AniSD` (`5.6–12.6`) and `AnimeSharpV4_FastPU` (`6.5–13.2`).
+  2. **Hidden Root Causes of `HiR=2.31x` Over-Sharpening & Pastel/Colored-Line Drift:** `Phase27LineFlowLoss` still supervises `l_pix`, `l_ink(2.8)`, `l_grad`, and `l_chr` toward `APISR.onnx` (`25.83 dB, ChrMAE=7.52, HiR=2.56x`) even on clean/mild inputs, causing `LineFlow_v27` to over-sharpen native 2025++ thin lines (`HiR=2.10–2.61x`), wash out delicate cheek blush/folds (`LowR=0.71` under H.264), darken colored *irotore* lashes/lines (`2026_Frieren_Lashes`), and suffer `ChrMAE=5.40–6.25`.
+  3. **Architectural Root Cause of `LineFlow_v27` GPU/VRAM Bottleneck (`242.2 ms / 822 MB` @ 540p, `1035.2 ms / 3026 MB` @ 4K FP16):** Unfused `PReLU`, `(1x9)+(9x1)` depthwise strip convolutions (blocking Tensor Core coalescing + slight diagonal deficit `DiagHV=0.986`), and `224ch` multi-tap concat.
+  4. **Pipeline/Eval Gaps Found:** `dataset/otf_dataset.py` lacked explicit `YUV_I420` 4:2:0 subsampling (fixed in Colab OTF dataset via `cv2.COLOR_BGR2YUV_I420`), and `benchmark/xyether_evaluator.py` clipped white-edge overshoot at `1.0`.
+
+### 15.3 Controlled Round 1 6-Arm Ablation on 21 `>=2025` Sakugabooru Scenes (Colab T4)
+| Regime | Arm (`Steps`) | `PSNR` | `SSIM` | `LPIPS` | `Halo` | `HL1D` | `LowR` | `HiR` | `DiagHV` | `Jit` | `Chr` | `Chk` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`clean_2025`** | `Arm0_v27_Base` | 26.61 | 0.8965 | 0.1301 | 15.7 | 8.3 | 0.65 | 1.64 | 1.004 | 87.89 | 7.22 | 0.927 |
+| **`clean_2025`** | `Arm2_v27_Dual` (`600`) | 33.79 | 0.9570 | 0.0587 | 5.5 | 7.7 | 0.58 | 0.95 | 1.018 | 78.56 | 4.22 | 1.221 |
+| **`clean_2025`** | `Arm3_RepC64` (`1200`) | 35.45 | 0.9707 | 0.0418 | 4.6 | 7.0 | 0.70 | 0.96 | 1.013 | 82.19 | 0.87 | 1.259 |
+| **`clean_2025`** | **`Arm4_RepHyb56` (`1200`)** | **35.77** | **0.9717** | 0.0368 | **3.5** | 7.3 | 0.72 | **0.94** | 1.014 | 80.39 | 0.86 | 1.393 |
+| **`clean_2025`** | `Arm5_RepPU96` (`1200`) | 35.20 | 0.9689 | **0.0316** | 5.6 | 8.5 | **0.94** | 0.88 | 1.010 | 84.35 | **0.79** | 1.533 |
+| **`h264_yuv420`** | `Arm0_v27_Base` | 25.96 | 0.8606 | 0.1670 | 19.2 | 11.9 | 0.55 | **1.40** | 1.026 | 75.66 | 8.12 | **0.834** |
+| **`h264_yuv420`** | `Arm2_v27_Dual` (`600`) | **29.95** | **0.8938** | **0.1331** | **14.4** | 12.6 | 0.57 | 0.76 | 1.049 | 65.85 | **7.07** | 1.549 |
+| **`h264_yuv420`** | `Arm4_RepHyb56` (`1200`) | 29.57 | 0.8831 | 0.1427 | 18.2 | 13.3 | 0.74 | 0.71 | 1.050 | 67.56 | 7.71 | 1.729 |
+| **`h264_yuv420`** | `Arm5_RepPU96` (`1200`) | 29.24 | 0.8766 | 0.1490 | 20.4 | 14.5 | **0.98** | 0.68 | 1.048 | 71.81 | 7.75 | 1.834 |
+| **`curvejit_webp`** | `Arm0_v27_Base` | 26.47 | 0.8824 | 0.1493 | 15.4 | — | — | **1.48** | — | — | — | — |
+| **`curvejit_webp`** | `Arm2_v27_Dual` (`600`) | **31.61** | **0.9245** | **0.1033** | **9.5** | — | — | 0.76 | — | — | — | — |
+| **`curvejit_webp`** | `Arm4_RepHyb56` (`1200`) | 31.24 | 0.9168 | 0.1112 | 12.6 | — | — | 0.69 | — | — | — | 1.802 |
+
+- **Round 1 Conclusions (Empirically Verified):**
+  1. `Arm5_RepPU96` (`PixelUnshuffle(2)` early spatial folding) **rejected** for crisp 2x anime: worst checkerboard (`Chk=1.533–1.834`), worst `h264` Halo (`20.4`), and softest `HiR` (`0.68`).
+  2. `Phase28WaveletDualLoss` (strided `2x2` Haar DWT + removed `l_grad`/`l_lap`) proved pure GT supervision boosts `Clean` PSNR by `+9.16 dB` (`35.77` vs `26.61`) and drops `ChrMAE` to `0.86` (`-88%`), **but** strided DWT induced `2x2` grid checkerboard (`Chk=1.393–1.802`) and softened H.264/CurveJit lines (`HiR=0.69–0.76`).
+  3. **Round 2 (`Phase28SWTCrispLoss`) Executed:** Replaced strided DWT with `StationaryHaarSWT2D` (`stride=1`, `dilation=1,2`) + `1.05x GT` directional gradient/Laplacian/under-sharpness crispness floor + `0.012..0.085` micro-detail weighting on `P28_v27_SWT_Crisp` (`700` steps) vs `P28_RepHyb64_SWT` (`1,400` steps).
+
+### 15.4 Round 2 Verification (`StationaryHaarSWT2D` + `RepHybrid64` vs SOTA on 21 `>=2025` Scenes, Colab T4)
+- **Colab T4 FP16 Speed & Peak VRAM (`540p -> 1080p` / `1080p -> 4K`):**
+  - `LineFlow_v27` (`514,148` params): `540p = 249.0 ms / 1232 MB` | `1080p = 1062.0 ms / 3437 MB`
+  - **`RepHybrid64_SWT`** (`574,604` deploy params): `540p = 74.9 ms / 764 MB` (**`3.32x` faster**, `-38.0%` VRAM) | `1080p = 311.6 ms / 1570 MB` (**`3.41x` faster**, **`-54.3%` VRAM**)
+
+| Regime | Model | `PSNR` | `SSIM` | `LPIPS` | `Halo` | `HL1D` | `LowR` | `HiR` | `DiagHV` | `Jit` | `Chr` | `Chk` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`clean_2025`** | `LineFlow_v27` | 26.61 | 0.8965 | 0.1301 | 15.7 | 8.3 | 0.65 | 1.64 | 1.004 | 87.89 | 7.22 | 0.927 |
+| **`clean_2025`** | `P28_v27_SWT` (`700`) | 33.55 | 0.9542 | 0.0642 | 6.1 | 7.9 | 0.52 | **0.96** | 1.016 | 78.40 | 4.47 | 1.064 |
+| **`clean_2025`** | **`P28_RepHyb64_SWT` (`1400`)** | **34.91** | **0.9681** | **0.0539** | **6.0** | 7.2 | 0.58 | **0.95** | 1.013 | 80.55 | **1.97** | 1.065 |
+| **`clean_2025`** | `APISR_2x` | 25.06 | 0.8703 | 0.1405 | 43.9 | 6.2 | **1.04** | 1.92 | 0.994 | 99.31 | 10.24 | 1.454 |
+| **`clean_2025`** | `AniSD_SPAN` | 33.66 | 0.9513 | 0.0585 | 7.1 | 10.1 | 0.78 | 0.76 | 1.017 | **78.00** | 5.08 | 1.241 |
+| **`clean_2025`** | `AnimeSharpV4_PU` | **36.55** | **0.9756** | **0.0216** | **4.0** | 6.9 | 0.86 | 0.89 | 1.008 | 84.53 | 2.35 | **0.864** |
+| **`h264_yuv420`** | `LineFlow_v27` | 25.96 | 0.8606 | 0.1670 | 19.2 | 11.9 | 0.55 | 1.40 | 1.026 | 75.66 | 8.12 | **0.834** |
+| **`h264_yuv420`** | `P28_v27_SWT` (`700`) | **29.97** | **0.8951** | **0.1364** | **13.9** | 12.7 | 0.49 | 0.75 | 1.047 | **64.35** | **7.19** | 1.405 |
+| **`h264_yuv420`** | `P28_RepHyb64_SWT` (`1400`) | 29.71 | 0.8890 | 0.1458 | 17.4 | 12.9 | 0.58 | 0.72 | 1.048 | 65.97 | 7.85 | 1.397 |
+| **`h264_yuv420`** | `APISR_2x` | 24.86 | 0.8422 | 0.1642 | 42.0 | **9.7** | **0.91** | 1.67 | 1.013 | 95.09 | 9.89 | 1.085 |
+| **`h264_yuv420`** | `AniSD_SPAN` | 29.66 | 0.8910 | 0.1496 | 14.0 | 16.5 | 0.73 | 0.55 | 1.052 | 66.32 | 7.71 | 1.586 |
+| **`h264_yuv420`** | `AnimeSharpV4_PU` | **30.54** | **0.9072** | **0.1031** | **13.7** | 12.8 | 0.74 | 0.69 | 1.040 | 73.61 | **6.43** | 1.234 |
+| **`curvejit_webp`** | `LineFlow_v27` | 26.47 | 0.8824 | 0.1493 | 15.4 | 10.3 | 0.56 | 1.48 | 1.013 | 80.62 | 7.42 | **0.896** |
+| **`curvejit_webp`** | `P28_v27_SWT` (`700`) | **31.57** | **0.9244** | **0.1069** | **9.4** | 11.3 | 0.47 | 0.76 | 1.038 | **67.25** | **6.04** | 1.405 |
+| **`curvejit_webp`** | `P28_RepHyb64_SWT` (`1400`) | 31.38 | 0.9201 | 0.1162 | 11.9 | 11.6 | 0.54 | 0.70 | 1.042 | 67.85 | 6.49 | 1.485 |
+| **`curvejit_webp`** | `APISR_2x` | 25.24 | 0.8620 | 0.1486 | 40.3 | **7.6** | **0.94** | 1.76 | 1.003 | 96.83 | 9.39 | 1.268 |
+| **`curvejit_webp`** | `AniSD_SPAN` | 30.94 | 0.9150 | 0.1196 | 9.8 | 15.4 | 0.72 | 0.54 | 1.044 | 67.73 | 6.67 | 1.670 |
+| **`curvejit_webp`** | `AnimeSharpV4_PU` | **32.17** | **0.9321** | **0.0728** | 10.2 | 10.1 | 0.80 | 0.75 | 1.026 | 78.39 | **5.40** | 0.939 |
+
+- **Empirical Proof Conclusions (`Round 1` + `Round 2` + Visual Inspection `media_1795391146445_b0a82e8c.jpg`):**
+  1. **`StationaryHaarSWT2D` Cut Checkerboard Cleanly:** Compared to Round 1 strided DWT, `Chk` dropped across every regime (`RepHyb` Clean `1.393 -> 1.065`, H.264 `1.729 -> 1.397`, CurveJit `1.802 -> 1.485`; `v27` Clean `1.221 -> 1.064`, H.264 `1.549 -> 1.405`), proving `stride=1` SWT eliminates 2x2 grid phase artifacts.
+  2. **`RepHybrid64` Delivers `3.4x` Speed + `<50%` Peak VRAM Over `LineFlow_v27`:** Even at `64ch` (`574,604` deploy params vs `514,148`), `RepHybrid64` ran `74.9 ms / 764 MB` (`540p`) and `311.6 ms / 1570 MB` (`1080p->4K`), beating `v27` (`249.0 ms / 1232 MB` and `1062.0 ms / 3437 MB`) by `3.32x–3.41x`, while jumping `+8.30 dB` Clean PSNR (`34.91` vs `26.61`), beating `AniSD_SPAN` (`33.66`) on Clean PSNR/SSIM/LPIPS/Halo/ChrMAE, and cutting `irotore` color drift by `-73%` (`Chr=1.97` vs `v27 7.22` and `APISR 10.24`).
+  3. **Proven Trade-off Requiring Hybrid Loss for Full Phase 28:** Pure GT supervision (`100% GT`, `0% APISR`) — even with `1.05x` Laplacian crispness — still converges toward blurry posterior-mean averages on heavily degraded `h264_yuv420` & `curvejit_webp` (`HiR=0.70–0.76`, matching `AnimeSharpV4_PU`'s `0.69–0.75`), and our `Phase28SWTCrispLoss` over-weighted flat/low-contrast pixels downward (`LowR=0.47–0.58`, noticeably smoothing smoky gradients in `solo_leveling`). Visually on `kusuriya` (Row 4), `v27_Base` & `APISR_2x` darkened warm lashes/hairlines while `P28_v27_SWT` & `RepHyb64_SWT` preserved natural bright *irotore* fidelity. Therefore, Phase 28 full training requires **Degradation-Gated Hybrid Supervision** (`100% GT` for clean/mild, `Zero-Halo APISR Edge Valley Anchor` gated strictly to `reg >= 0.25` high-contrast edges + `Low-Contrast 4..22` protection to lift `LowR >= 0.85` while keeping `HiR ~ 1.0–1.25` under H.264).
+

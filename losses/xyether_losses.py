@@ -1799,5 +1799,192 @@ class Phase27LineFlowLoss(Phase26LineFlowLoss):
         }
 
 
+class StationaryHaarSWT2D(nn.Module):
+    """
+    Shift-invariant (stride=1) 2D Haar Stationary Wavelet Transform using dilated 2x2 filters.
+    Eliminates the 2x2 grid checkerboard induced by strided (stride=2) DWT losses.
+    """
+
+    def __init__(self):
+        super().__init__()
+        filters = torch.stack([
+            torch.tensor([[0.5, 0.5], [0.5, 0.5]]),
+            torch.tensor([[-0.5, -0.5], [0.5, 0.5]]),
+            torch.tensor([[-0.5, 0.5], [-0.5, 0.5]]),
+            torch.tensor([[0.5, -0.5], [-0.5, 0.5]]),
+        ], dim=0).unsqueeze(1)
+        self.register_buffer("filters", filters)
+
+    def forward(self, x: torch.Tensor, dilation: int = 1):
+        b, c, h, w = x.shape
+        px = F.pad(x, (0, dilation, 0, dilation), mode="replicate")
+        w_rep = self.filters.to(device=x.device, dtype=x.dtype).repeat(c, 1, 1, 1)
+        out = F.conv2d(px, w_rep, stride=1, dilation=dilation, groups=c).reshape(b, c, 4, h, w)
+        return out[:, :, 0], out[:, :, 1], out[:, :, 2], out[:, :, 3]
+
+
+class Phase28DegradGatedSWTLoss(Phase27LineFlowLoss):
+    """
+    Phase 28 Degradation-Gated Stationary Wavelet + Crisp Micro-Preservation Loss.
+    Addresses every trade-off proved across 2025++ ablations:
+    1. Clean/Mild inputs (`regime == 0`): 100% Pure GT supervision (preserves color, bright
+       bloom, and irotore colored lashes with zero over-sharpening).
+    2. Degraded streams (`regime >= 1`, H.264 4:2:0 / CurveJit / Harsh): blends Zero-Halo
+       APISR Teacher edge-valley targets strictly on high-contrast contours (`span_gt > 0.07`),
+       keeping chroma, flat fills, and low-contrast `4..22` shading 100% anchored to GT.
+    3. StationaryHaarSWT2D (`stride=1`, `dilation=1,2`) + low-contrast `4..22` preservation
+       prevents 2x2 checkerboarding and smoke/blush over-smoothing (`LowR >= 0.85`).
+    4. Optional decaying warm-start distillation from our own `XyetherLineFlow_v27` checkpoint.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.swt = StationaryHaarSWT2D()
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        gt_b = gt_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode="nearest")
+        luma_w = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+
+        pred_y = (pred * luma_w).sum(dim=1, keepdim=True)
+        gt_y = (gt_b * luma_w).sum(dim=1, keepdim=True)
+        tar_y = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        near_y = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        pred_cr, gt_cr = pred[:, 0:1] - pred[:, 1:2], gt_b[:, 0:1] - gt_b[:, 1:2]
+        pred_cb, gt_cb = pred[:, 2:3] - pred[:, 1:2], gt_b[:, 2:3] - gt_b[:, 1:2]
+
+        with torch.no_grad():
+            if regime is None:
+                is_deg = torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+            else:
+                is_deg = (regime > 0).float().view(-1, 1, 1, 1)
+
+            span_gt = (F.max_pool2d(gt_b, 3, 1, 1) - (-F.max_pool2d(-gt_b, 3, 1, 1))).max(dim=1, keepdim=True)[0]
+            span_cr = F.max_pool2d(gt_cr, 3, 1, 1) - (-F.max_pool2d(-gt_cr, 3, 1, 1))
+            span_cb = F.max_pool2d(gt_cb, 3, 1, 1) - (-F.max_pool2d(-gt_cb, 3, 1, 1))
+            span_all = torch.maximum(span_gt, 1.35 * torch.maximum(span_cr, span_cb))
+
+            ez_micro = F.max_pool2d(((span_all - 0.010) / 0.030).clamp(0.0, 1.0), 3, 1, 1)
+            edge_zone = torch.maximum(edge_zone.float() * is_deg, ez_micro) if edge_zone is not None else ez_micro
+
+            is_hi_edge = ((span_gt - 0.070) / 0.110).clamp(0.0, 1.0)
+            is_hi_ridge = ((gt_y - F.avg_pool2d(gt_y, 5, 1, 2)) > 0.08).float()
+            is_micro = ((span_all >= 0.012) & (span_all <= 0.088)).float()
+
+            # Blend Zero-Halo APISR edge luminance ONLY on degraded high-contrast edges
+            alpha_edge = 0.55 * is_deg * is_hi_edge
+            edge_ref_y = gt_y * (1.0 - alpha_edge) + tar_y * alpha_edge
+            edge_ref_rgb = gt_b * (1.0 - alpha_edge) + tar_b * alpha_edge
+
+            w_pix = 1.0 + 1.8 * ((span_all - 0.012) / 0.045).clamp(0.0, 1.0) + 1.4 * is_micro
+            w_edge = (0.35 + 2.4 * is_hi_edge + 2.2 * is_micro) * (1.0 + 0.75 * is_deg)
+
+            ink_pull = (F.relu(near_y - edge_ref_y) / 0.040).clamp(0.0, 1.4) * is_hi_edge * is_deg
+            sh_pull = (F.relu(edge_ref_y - near_y) / 0.060).clamp(0.0, 1.1) * is_hi_edge * is_deg
+
+        # 1. Pure GT Pixel & High-Ridge Fidelity
+        l_pix = (w_pix * torch.sqrt((pred - gt_b) ** 2 + 1e-6)).mean()
+        l_ridge = (is_hi_ridge * (pred - gt_b).abs()).mean()
+
+        # 2. Shift-Invariant Stationary Haar SWT (dilation 1 & 2, stride=1)
+        l_swt = 0.0
+        for dil, wd in [(1, 1.0), (2, 0.55)]:
+            p0, p1, p2, p3 = self.swt(pred, dilation=dil)
+            g0, g1, g2, g3 = self.swt(gt_b, dilation=dil)
+            l_swt = l_swt + wd * (
+                0.9 * (p0 - g0).abs().mean()
+                + 1.25 * (p1 - g1).abs().mean()
+                + 1.25 * (p2 - g2).abs().mean()
+                + 1.45 * (p3 - g3).abs().mean()
+            )
+
+        # 3. Hybrid Edge Sharpness (GT + Degraded High-Contrast APISR Anchor)
+        l_grad = self._multiscale_directional_and_diag_grad(pred, edge_ref_rgb, w_edge)
+        lap_p = F.conv2d(pred_y, lap_k, padding=1)
+        lap_g = F.conv2d(gt_y, lap_k, padding=1)
+        lap_ref = F.conv2d(edge_ref_y, lap_k, padding=1)
+        l_lap = (w_edge * (lap_p - lap_ref * (1.0 + 0.05 * is_deg)).abs()).mean()
+        l_ink = (ink_pull * F.relu(pred_y - edge_ref_y)).mean()
+        l_sh = (sh_pull * F.relu(edge_ref_y - pred_y)).mean()
+
+        # 4. Low-Contrast (4..22) Gradient/Laplacian Preservation & High-Edge Crispness Floor
+        gx_p, gy_p = pred_y[:, :, :, 1:] - pred_y[:, :, :, :-1], pred_y[:, :, 1:, :] - pred_y[:, :, :-1, :]
+        gx_g, gy_g = gt_y[:, :, :, 1:] - gt_y[:, :, :, :-1], gt_y[:, :, 1:, :] - gt_y[:, :, :-1, :]
+        gx_r, gy_r = edge_ref_y[:, :, :, 1:] - edge_ref_y[:, :, :, :-1], edge_ref_y[:, :, 1:, :] - edge_ref_y[:, :, :-1, :]
+        micro_x = torch.maximum(is_micro[:, :, :, 1:], is_micro[:, :, :, :-1])
+        micro_y = torch.maximum(is_micro[:, :, 1:, :], is_micro[:, :, :-1, :])
+        l_under = (
+            F.relu(0.96 * gx_r.abs() - gx_p.abs()).mean()
+            + F.relu(0.96 * gy_r.abs() - gy_p.abs()).mean()
+        )
+        l_micro_preserve = (
+            2.5 * (is_micro * (lap_p - lap_g).abs()).mean()
+            + 2.0 * ((micro_x * (gx_p - gx_g).abs()).mean() + (micro_y * (gy_p - gy_g).abs()).mean())
+        )
+
+        # 5. Chroma 100% Pure GT Lock + Mild Flat Cel Denoise (strictly < 4 levels)
+        l_chr = (
+            ((pred_cr - gt_cr).abs() + (pred_cb - gt_cb).abs()).mean()
+            + 0.8 * ((F.avg_pool2d(pred_cr, 4, 4) - F.avg_pool2d(gt_cr, 4, 4)).abs() + (F.avg_pool2d(pred_cb, 4, 4) - F.avg_pool2d(gt_cb, 4, 4)).abs()).mean()
+            + 0.6 * ((F.avg_pool2d(pred_cr, 8, 8) - F.avg_pool2d(gt_cr, 8, 8)).abs() + (F.avg_pool2d(pred_cb, 8, 8) - F.avg_pool2d(gt_cb, 8, 8)).abs()).mean()
+        )
+        l_cel = self._bilateral_cel_smoothness_v3(pred, gt_b, gt_b, span_thresh=0.012, span_denom=0.008)
+
+        # 6. Angle-Only Curve Smoothness & Strict Zero-Halo Ceiling
+        l_curve = self._angle_only_curve_smoothness(pred, edge_ref_rgb, luma_w)
+        with torch.no_grad():
+            max3_gt = F.max_pool2d(gt_b, 3, 1, 1) + 0.002 + 0.015 * is_hi_ridge
+            min3_gt = -F.max_pool2d(-gt_b, 3, 1, 1) - 0.003
+        l_halo = F.relu(pred - max3_gt).mean() + 0.5 * F.relu(min3_gt - pred).mean()
+
+        total = (
+            1.6 * l_pix
+            + 1.4 * l_ridge
+            + 1.2 * l_swt
+            + 1.8 * l_grad
+            + 1.1 * l_lap
+            + 1.8 * l_ink
+            + 1.2 * l_sh
+            + 1.6 * l_under
+            + 1.4 * l_micro_preserve
+            + 1.6 * l_chr
+            + 0.45 * l_cel
+            + 1.5 * l_curve
+            + 5.5 * l_halo
+        )
+
+        l_warm_val = 0.0
+        if warmstart_out is not None and warmstart_weight > 0.0:
+            w_dist = 0.30 + 1.20 * is_deg * is_hi_edge
+            l_warm = (w_dist * (pred - warmstart_out.detach()).abs()).mean()
+            total = total + warmstart_weight * l_warm
+            l_warm_val = l_warm.item()
+
+        return total, {
+            "l_pix": l_pix.item(),
+            "l_swt": l_swt.item(),
+            "l_grad": (l_grad + l_lap).item(),
+            "l_micro": l_micro_preserve.item(),
+            "l_chr": l_chr.item(),
+            "l_halo": l_halo.item(),
+            "l_warm": l_warm_val,
+        }
+
+
+
 
 

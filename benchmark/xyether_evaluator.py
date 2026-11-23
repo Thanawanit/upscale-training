@@ -25,9 +25,9 @@ class XyetherEvaluator:
         - Flat color patch (for Noise Residual measurement)
         - Thin black line (for Line Depth measurement)
         """
-        # 1. Step edge: Left is pure white (255), right is pure black (0)
-        edge = np.zeros((128, 128, 3), dtype=np.float32)
-        edge[:, :64, :] = 1.0
+        # 1. Step edge: 0.88 light side vs 0.12 dark side so clamp(0, 1) cannot mask bright halos
+        edge = np.full((128, 128, 3), 0.12, dtype=np.float32)
+        edge[:, :64, :] = 0.88
 
         # 2. Flat anime skin patch: Hex #FBE2D5 -> RGB (251, 226, 213) / 255.0
         flat = np.full((128, 128, 3), [251/255.0, 226/255.0, 213/255.0], dtype=np.float32)
@@ -50,9 +50,9 @@ class XyetherEvaluator:
         edge_t = torch.from_numpy(edge_lr.transpose(2, 0, 1)).unsqueeze(0).to(self.device)
         edge_sr = model(edge_t).squeeze(0).permute(1, 2, 0).cpu().numpy()
 
-        # Check for white ringing adjacent to edge transition (overshoot > 1.0)
-        white_side = edge_sr[:, :60, :]
-        overshoot_val = float(max(0.0, np.max(white_side) - 1.0) * 255.0)
+        # Check for ringing adjacent to edge transition (overshoot above 0.88 light side)
+        light_side = edge_sr[:, :60, :]
+        overshoot_val = float(max(0.0, np.max(light_side) - 0.88) * 255.0)
 
         # ==================== 2. Noise Residual Test (In = 10) ====================
         flat_lr = cv2.resize(flat_np, (64, 64), interpolation=cv2.INTER_AREA)
