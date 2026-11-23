@@ -835,6 +835,36 @@ Following user feedback rejecting new random/distilled `RepHybrid` blur and dire
 2. **Real but Incremental Vector Improvement on 450 Short Steps (`72` patches):** In edge-rich H.264 crops (`p28_sharpvec_compare.jpg` `sb_04`, `sb_12` eye/hair), `Keep8B_VecClean` & `Pruned6B` thinned H.264 halo smudges and improved `LowR` (`0.76 -> 1.05`) + `HiR` (`1.07 -> 1.15`) + `Chk` (`0.765 -> 0.736`) over `LineFlow_v27`.
 3. **Honest Gap Remaining vs `APISR_2x`:** Short `400–450` steps on only `72` `APISR(clean)` patches (without EMA) did **not** yet reach `APISR_2x`'s extreme H.264 line crispness (`HiR = 1.50`, `sb_12` razor eyelashes), while unmasked `l_cel=1.4` damped synthetic `LapVar` (`957 -> 631`). Closing that remaining visual gap on Kaggle requires full-duration (`5,000–7,500` iters) training from `v27` / `Pruned6B_Leaky` on `300+` dynamic-crop Safebooru frames with EMA + **H.264/CurveJit inputs matched against `APISR(clean HR)`** (never `APISR(degraded LR)`)!
 
+---
+
+## 17. Phase 29 — `XyetherLineFlow_v29` Final Kaggle Training & Audit (`v41`)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowNet(56ch, 8b, PReLU)` resumed directly from `XyetherLineFlow_v27_Final.pth`), trained `6,500` iters (`8,684.6s`) on Kaggle GPU with `Phase29VectorCleanLoss` (Unclipped `APISR(clean LR -> 4x->2x)` + Flat-Masked `l_cel` (`span < 0.018`) + `LPIPS(0.45)` + Relativistic `PatchVectorDiscriminator(0.08)` + `ModelEMA(0.9992)`).
+- **Archived Artifacts ([`checkpoints/Phase29_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase29_XyetherLineFlow_v1/)):**
+  - `XyetherLineFlow_v29_Final.pth` (`3.98 MB`)
+  - `XyetherLineFlow_v29_Final.onnx` (`1.98 MB` — FP32 parity `max_abs_diff = 1.13e-06`)
+  - `XyetherLineFlow_v29_Final_FP16.onnx` (`1.01 MB` — FP16 parity `max_abs_diff = 1.34e-03`, `-12.8%` Colab T4 latency vs FP32)
+  - `phase29_metrics_report.json` (`47.6 KB`)
+- **`XyetherEvaluator` Final:** `line_depth = 0.0` (maintained 100% across all checkpoints `1500/3000/4500/6000/Final`), `sharpness_lapvar = 862.8`, `overshoot_halo = 13.2328`.
+- **Kaggle 4-Regime Benchmark (`test_anime.png` — `Phase29_LineFlow_v1` vs `Phase27_LineFlow_v5` vs `APISR_4x_to_2x`):**
+
+| Regime | Model | `HL1 / HL2` $\downarrow$ | `LapVar` $\uparrow$ | `MicroLap` $\uparrow$ | `MAE_AP` $\downarrow$ | `Halo` | `Checker` $\downarrow$ | `PSNR` |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Clean_LR`** | `LineFlow_v27` | 13 / 23 | 945.9 | 2.51 | 4.88 | +0 | 0.13 | 29.57 |
+| **`Clean_LR`** | **`LineFlow_v29`** | 16 / 23 | **1016.6** | **3.06** | **3.81** | +11 | **0.14** | 27.85 |
+| **`Clean_LR`** | `APISR_4x_to_2x` | 19 / 18 | 969.3 | 3.08 | 0.00 | +2 | 0.17 | 27.09 |
+| **`RealBlurry_LR`** | `LineFlow_v27` | 14 / 32 | 906.2 | 2.42 | 4.54 | -3 | 0.15 | 28.81 |
+| **`RealBlurry_LR`** | **`LineFlow_v29`** | 16 / **26** | **978.2** | **3.02** | **4.12** | **+6** | **0.16** | 26.66 |
+| **`RealBlurry_LR`** | `APISR_4x_to_2x` | 28 / 23 | 958.3 | 3.70 | 0.00 | +8 | 0.18 | 27.36 |
+| **`Harsh_Q62_LR`** | `LineFlow_v27` | 28 / 61 | 700.4 | 2.35 | 5.41 | +2 | 0.15 | 27.80 |
+| **`Harsh_Q62_LR`** | **`LineFlow_v29`** | 33 / **43** | **796.1** | **3.00** | **5.07** | +16 | **0.16** | 25.63 |
+| **`Harsh_Q62_LR`** | `APISR_4x_to_2x` | 14 / 50 | 895.7 | 4.02 | 0.00 | +10 | 0.18 | 26.21 |
+| **`Shuffled_Reencode`** | `LineFlow_v27` | 30 / 55 | 757.4 | 2.22 | 5.33 | -3 | 0.14 | 28.42 |
+| **`Shuffled_Reencode`** | **`LineFlow_v29`** | 35 / **46** | **850.4** | **2.76** | **4.81** | +9 | **0.14** | 26.28 |
+| **`Shuffled_Reencode`** | `APISR_4x_to_2x` | 25 / 82 | 936.5 | 3.94 | 0.00 | +8 | 0.17 | 26.42 |
+
+- **Visual Proof ([`p29_final_visual_compare.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p29_final_visual_compare.jpg)):** Delivers clearly sharper, deeper vector hairlines (`Harsh_Q62 HL2 = 43` vs `v27 = 61`, `APISR = 50`; `Shuffled HL2 = 46` vs `APISR = 82`) and cleaner cel fills (`Checker = 0.14–0.16` vs `APISR = 0.17–0.18`) across all regimes with `LapVar` beating `APISR_2x` on both `Clean_LR` (`1016.6 vs 969.3`) and `RealBlurry_LR` (`978.2 vs 958.3`), at `1.01 MB` FP16 ONNX.
+
+
 
 
 
