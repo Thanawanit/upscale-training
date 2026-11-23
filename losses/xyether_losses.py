@@ -1208,10 +1208,12 @@ class Phase23ZeroHaloAPISRTeacher(LumaGuidedAPISRTeacher):
         onnx_path: str = "./reference_models/Model/APISR.onnx",
         full_color_consolidation: bool = False,
         freq_micro_rescue: bool = False,
+        unclipped: bool = False,
     ):
         super().__init__(onnx_path=onnx_path)
         self.full_color_consolidation = full_color_consolidation
         self.freq_micro_rescue = freq_micro_rescue
+        self.unclipped = unclipped
 
     @torch.no_grad()
     def forward(self, hr_tensor: torch.Tensor):
@@ -1232,6 +1234,11 @@ class Phase23ZeroHaloAPISRTeacher(LumaGuidedAPISRTeacher):
             out_4x_np = self.ort_sess.run(None, {self.input_name: lr_np})[0]
             ap_4x = torch.from_numpy(out_4x_np).to(device=device, dtype=torch.float32).clamp(0.0, 1.0)
         ap_t = F.avg_pool2d(ap_4x, kernel_size=2, stride=2)
+
+        if self.unclipped:
+            span_ap_rgb = (F.max_pool2d(ap_t, 3, 1, 1) - (-F.max_pool2d(-ap_t, 3, 1, 1))).max(dim=1, keepdim=True)[0]
+            edge_zone = F.max_pool2d(((span_ap_rgb - 0.015) / 0.045).clamp(0.0, 1.0), 3, 1, 1)
+            return ap_t.clamp(0.0, 1.0).to(dtype=dtype), edge_zone.to(dtype=dtype)
 
         luma_w = torch.tensor([0.299, 0.587, 0.114], device=device, dtype=torch.float32).view(1, 3, 1, 1)
         gt_y = (gt_t * luma_w).sum(dim=1, keepdim=True)
@@ -1983,6 +1990,142 @@ class Phase28DegradGatedSWTLoss(Phase27LineFlowLoss):
             "l_halo": l_halo.item(),
             "l_warm": l_warm_val,
         }
+
+
+class PatchVectorDiscriminator(nn.Module):
+    """Spectral-normalized 5-layer PatchGAN discriminator for crisp vector linework."""
+
+    def __init__(self, nf: int = 48):
+        super().__init__()
+        from torch.nn.utils import spectral_norm
+
+        self.net = nn.Sequential(
+            spectral_norm(nn.Conv2d(3, nf, 3, 1, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(nf, nf, 4, 2, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(nf, nf * 2, 4, 2, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(nf * 2, nf * 4, 4, 2, 1)),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(nn.Conv2d(nf * 4, 1, 3, 1, 1)),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class LPIPSPerceptualLoss(nn.Module):
+    """AlexNet LPIPS perceptual loss in [0, 1] space with clean VGG fallback."""
+
+    def __init__(self, loss_weight: float = 0.45):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.lpips_net = None
+        self.vgg_fallback = None
+        self._init_done = False
+
+    def _lazy_init(self, device: torch.device) -> None:
+        if self._init_done:
+            return
+        self._init_done = True
+        try:
+            import lpips
+
+            net = lpips.LPIPS(net="alex").to(device).eval()
+            for p in net.parameters():
+                p.requires_grad_(False)
+            self.lpips_net = net
+        except Exception as exc:
+            print(f"[WARN] LPIPS unavailable ({exc}); falling back to VGGPerceptualLoss.")
+            self.vgg_fallback = VGGPerceptualLoss(loss_weight=1.0).to(device).eval()
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        self._lazy_init(pred.device)
+        if self.lpips_net is not None:
+            return self.loss_weight * self.lpips_net(pred * 2.0 - 1.0, target * 2.0 - 1.0).mean()
+        return self.loss_weight * self.vgg_fallback(pred, target)
+
+
+class Phase29VectorCleanLoss(Phase27LineFlowLoss):
+    """
+    Phase 29 Keep-8B LineFlow Vector-Clean Loss (Section 16.5 findings):
+    - Targets unclipped APISR(clean LR -> 4x->2x) for razor vector outlines & clean cel fills.
+    - Strictly gates cel bilateral smoothing to flat zones (`span_ap < 0.018`) so lines keep
+      full LapVar crispness (`line_depth = 0.0`), unlike unmasked `l_cel`.
+    - Adds moderated edge-weighted |Laplacian| + multiscale directional gradients and angle-only
+      curve smoothness, while bounding overshoots to APISR local 3x3 max + 0.002.
+    """
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        gt_b = gt_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode="nearest")
+        luma_w = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+
+        py = (pred * luma_w).sum(dim=1, keepdim=True)
+        ay = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        ny = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        with torch.no_grad():
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            span_ap = F.max_pool2d(ay, 3, 1, 1) - (-F.max_pool2d(-ay, 3, 1, 1))
+            is_edge = ((span_ap - 0.035) / 0.065).clamp(0.0, 1.0)
+            flat_mask = (span_ap < 0.018).float()
+            w_edge = 0.50 + 2.50 * is_edge * (1.0 + 0.50 * is_deg)
+            ink_w = (F.relu(ny - ay) / 0.040).clamp(0.0, 1.8)
+            max3_ap = F.max_pool2d(tar_b, 3, 1, 1) + 0.002
+            min3_ap = -F.max_pool2d(-tar_b, 3, 1, 1) - 0.003
+
+        l_pix = 1.35 * torch.sqrt((pred - tar_b) ** 2 + 1e-6).mean() + 0.90 * (py - ay).abs().mean()
+        l_ink = (ink_w * F.relu(py - ay)).mean()
+        l_grad = self._multiscale_directional_and_diag_grad(pred, tar_b, w_edge)
+        lap_p = F.conv2d(py, lap_k, padding=1)
+        lap_a = F.conv2d(ay, lap_k, padding=1)
+        l_lap = (w_edge * (lap_p.abs() - lap_a.abs()).abs()).mean() + 0.65 * (w_edge * (lap_p - lap_a).abs()).mean()
+        l_curve = self._angle_only_curve_smoothness(pred, tar_b, luma_w)
+
+        # Flat-masked cel denoise wipes H.264/WebP compression grain without blurring ink lines
+        l_cel = (flat_mask * (pred - tar_b).abs()).mean() + 0.60 * self._bilateral_cel_smoothness_v3(
+            pred, tar_b, tar_b, span_thresh=0.016, span_denom=0.010
+        )
+        l_halo = F.relu(pred - max3_ap).mean() + 0.35 * F.relu(min3_ap - pred).mean()
+
+        total = (
+            l_pix
+            + 2.4 * l_ink
+            + 2.6 * l_grad
+            + 1.35 * l_lap
+            + 2.0 * l_curve
+            + 1.0 * l_cel
+            + 2.4 * l_halo
+        )
+
+        return total, {
+            "l_pix": l_pix.item(),
+            "l_ink": l_ink.item(),
+            "l_grad": l_grad.item(),
+            "l_lap": l_lap.item(),
+            "l_cel": l_cel.item(),
+            "l_halo": l_halo.item(),
+        }
+
 
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 # Ensure workspace root is importable
@@ -22,6 +23,8 @@ from benchmark.xyether_evaluator import XyetherEvaluator
 from dataset.otf_dataset import AnimeOTFDataset
 from losses.xyether_losses import (
     ColorLuvLoss,
+    LPIPSPerceptualLoss,
+    PatchVectorDiscriminator,
     Phase23LineFlowLoss,
     Phase23ZeroHaloAPISRTeacher,
     Phase24LineFlowLoss,
@@ -29,6 +32,7 @@ from losses.xyether_losses import (
     Phase26LineFlowLoss,
     Phase27LineFlowLoss,
     Phase28DegradGatedSWTLoss,
+    Phase29VectorCleanLoss,
     VGGPerceptualLoss,
 )
 
@@ -106,6 +110,22 @@ def export_onnx(ema_model: nn.Module, onnx_path: str) -> str:
     return onnx_path
 
 
+def export_fp16_onnx(fp32_onnx_path: str, fp16_onnx_path: str) -> str:
+    if not fp32_onnx_path or not os.path.exists(fp32_onnx_path):
+        return ""
+    try:
+        import onnx
+        from onnxconverter_common import float16
+    except ImportError:
+        print(f"[WARN] Skipping FP16 ONNX export ({fp16_onnx_path}): 'onnxconverter_common' not installed.")
+        return ""
+    model_fp32 = onnx.load(fp32_onnx_path)
+    model_fp16 = float16.convert_float_to_float16(model_fp32, keep_io_types=False)
+    onnx.save(model_fp16, fp16_onnx_path)
+    print(f"Exported FP16 ONNX: {fp16_onnx_path} ({os.path.getsize(fp16_onnx_path) / (1024 * 1024):.2f} MB)")
+    return fp16_onnx_path
+
+
 def upload_hf_artifacts(paths, hf_token: str, hf_repo: str, subdir: str) -> None:
     if not hf_token:
         return
@@ -178,6 +198,7 @@ def train_p23(args) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     resuming = bool(args.resume_path or args.resume_url)
     is_p28 = args.loss_version >= 28
+    is_p29 = args.loss_version >= 29
     print(f"Phase {args.loss_version} Training | arch={args.arch} | device={device} | scratch_init={not resuming}")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -251,9 +272,12 @@ def train_p23(args) -> None:
     teacher = Phase23ZeroHaloAPISRTeacher(
         onnx_path=args.teacher_onnx_path,
         full_color_consolidation=(args.loss_version >= 26),
-        freq_micro_rescue=(args.loss_version >= 27),
+        freq_micro_rescue=(args.loss_version == 27 or args.loss_version == 28),
+        unclipped=is_p29,
     ).to(device)
-    if args.loss_version >= 28:
+    if args.loss_version >= 29:
+        criterion = Phase29VectorCleanLoss().to(device)
+    elif args.loss_version == 28:
         criterion = Phase28DegradGatedSWTLoss().to(device)
     elif args.loss_version == 27:
         criterion = Phase27LineFlowLoss().to(device)
@@ -267,10 +291,28 @@ def train_p23(args) -> None:
         criterion = Phase23LineFlowLoss().to(device)
     luv_loss = ColorLuvLoss(loss_weight=args.luv_weight).to(device) if args.luv_weight > 0.0 else None
     vgg_loss = VGGPerceptualLoss(loss_weight=args.vgg_weight).to(device) if args.vgg_weight > 0.0 else None
+    lpips_loss = (
+        LPIPSPerceptualLoss(loss_weight=args.lpips_weight).to(device)
+        if (is_p29 and args.lpips_weight > 0.0)
+        else None
+    )
+    disc = PatchVectorDiscriminator(nf=48).to(device) if (is_p29 and args.gan_weight > 0.0) else None
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr_g, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, build_lr_lambda(args.warmup_iters, args.total_iters, args.lr_g, min_lr=args.min_lr)
+    )
+    opt_d = (
+        torch.optim.AdamW(disc.parameters(), lr=args.lr_d, betas=(0.5, 0.999), weight_decay=1e-4)
+        if disc is not None
+        else None
+    )
+    sch_d = (
+        torch.optim.lr_scheduler.LambdaLR(
+            opt_d, build_lr_lambda(args.warmup_iters, args.total_iters, args.lr_d, min_lr=args.min_lr)
+        )
+        if opt_d is not None
+        else None
     )
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda" and args.use_amp))
     evaluator = XyetherEvaluator(device=device)
@@ -303,6 +345,24 @@ def train_p23(args) -> None:
                 ws_weight = args.warmstart_weight * 0.5 * (1.0 + math.cos(math.pi * float(step) / float(args.warmstart_iters)))
                 warmstart_out = warmstart_model(lr_b)
 
+        loss_d_val = None
+        if disc is not None:
+            with torch.no_grad():
+                with torch.amp.autocast("cuda", enabled=(device.type == "cuda" and args.use_amp)):
+                    pred_det = model(lr_b)
+            d_real = disc(tar_b.float())
+            d_fake = disc(pred_det.float())
+            loss_d = 0.5 * (
+                F.relu(1.0 - (d_real - d_fake.mean())).mean()
+                + F.relu(1.0 + (d_fake - d_real.mean())).mean()
+            )
+            opt_d.zero_grad(set_to_none=True)
+            loss_d.backward()
+            torch.nn.utils.clip_grad_norm_(disc.parameters(), 1.0)
+            opt_d.step()
+            sch_d.step()
+            loss_d_val = loss_d.item()
+
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast("cuda", enabled=(device.type == "cuda" and args.use_amp)):
             pred = model(lr_b)
@@ -320,15 +380,32 @@ def train_p23(args) -> None:
             else:
                 loss_main, metrics = criterion(pred, tar_b, gt_b, lr_b, edge_zone=edge_zone)
             loss = loss_main
-            perc_ref = gt_b if is_p28 else tar_b
+            pred_f = pred.float()
             if luv_loss is not None:
-                l_luv = luv_loss(pred.float(), perc_ref.float())
+                luv_ref = (0.70 * tar_b + 0.30 * gt_b).float() if is_p29 else (gt_b if is_p28 else tar_b).float()
+                l_luv = luv_loss(pred_f, luv_ref)
                 loss = loss + l_luv
                 metrics["l_luv"] = l_luv.item()
+            if lpips_loss is not None:
+                l_lpips = lpips_loss(pred_f, tar_b.float())
+                loss = loss + l_lpips
+                metrics["l_lpips"] = l_lpips.item()
             if vgg_loss is not None:
-                l_vgg = vgg_loss(pred.float(), perc_ref.float())
+                perc_ref = gt_b if (is_p28 and not is_p29) else tar_b
+                l_vgg = vgg_loss(pred_f, perc_ref.float())
                 loss = loss + l_vgg
                 metrics["l_vgg"] = l_vgg.item()
+            if disc is not None:
+                d_r_g = disc(tar_b.float()).detach()
+                d_f_g = disc(pred_f)
+                l_gan = args.gan_weight * 0.5 * (
+                    F.relu(1.0 + (d_r_g - d_f_g.mean())).mean()
+                    + F.relu(1.0 - (d_f_g - d_r_g.mean())).mean()
+                )
+                loss = loss + l_gan
+                metrics["l_gan"] = l_gan.item()
+                if loss_d_val is not None:
+                    metrics["l_d"] = loss_d_val
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -356,14 +433,19 @@ def train_p23(args) -> None:
     final_pth = save_checkpoint(model, ema, args, args.total_iters, "Final")
     final_dep_pth = save_deploy_checkpoint(ema.ema, args, "Final_Deploy")
     final_onnx = export_onnx(ema.ema, os.path.join(args.output_dir, f"{args.model_prefix}_Final.onnx"))
+    final_fp16_onnx = (
+        export_fp16_onnx(final_onnx, os.path.join(args.output_dir, f"{args.model_prefix}_Final_FP16.onnx"))
+        if (args.export_fp16 or is_p29)
+        else ""
+    )
     final_rep = evaluator.evaluate_model(ema.ema, test_images=test_images)
     print(f"  [Final Eval] {final_rep}")
-    upload_hf_artifacts([final_pth, final_dep_pth, final_onnx], args.hf_token, args.hf_repo, args.hf_subdir)
+    upload_hf_artifacts([final_pth, final_dep_pth, final_onnx, final_fp16_onnx], args.hf_token, args.hf_repo, args.hf_subdir)
     print(f"Phase {args.loss_version} Training Complete!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Phase 23-28 Xyether AnimeSR")
+    parser = argparse.ArgumentParser(description="Train Phase 23-29 Xyether AnimeSR")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K")
     parser.add_argument("--arch", type=str, default="lineflow", choices=["lineflow", "rephybrid"])
     parser.add_argument("--resume_path", type=str, default="")
@@ -376,20 +458,24 @@ if __name__ == "__main__":
     parser.add_argument("--warmstart_blocks", type=int, default=8)
     parser.add_argument("--teacher_onnx_path", type=str, default="./reference_models/Model/APISR.onnx")
     parser.add_argument("--teacher_onnx_url", type=str, default="https://huggingface.co/Thanawanit/Kaggle-Backup/resolve/main/teachers/APISR.onnx")
-    parser.add_argument("--output_dir", type=str, default="./output_models_phase28")
-    parser.add_argument("--model_prefix", type=str, default="XyetherRepHybrid_v28")
-    parser.add_argument("--loss_version", type=int, default=28)
-    parser.add_argument("--num_feat", type=int, default=64)
-    parser.add_argument("--num_blocks", type=int, default=10)
+    parser.add_argument("--output_dir", type=str, default="./output_models_phase29")
+    parser.add_argument("--model_prefix", type=str, default="XyetherLineFlow_v29")
+    parser.add_argument("--loss_version", type=int, default=29)
+    parser.add_argument("--num_feat", type=int, default=56)
+    parser.add_argument("--num_blocks", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=12)
     parser.add_argument("--patch_size", type=int, default=160)
-    parser.add_argument("--total_iters", type=int, default=7500)
+    parser.add_argument("--total_iters", type=int, default=6500)
     parser.add_argument("--warmup_iters", type=int, default=200)
-    parser.add_argument("--lr_g", type=float, default=3.2e-4)
+    parser.add_argument("--lr_g", type=float, default=1.5e-4)
+    parser.add_argument("--lr_d", type=float, default=1.2e-4)
     parser.add_argument("--min_lr", type=float, default=8e-6)
-    parser.add_argument("--luv_weight", type=float, default=0.25)
-    parser.add_argument("--vgg_weight", type=float, default=0.04)
+    parser.add_argument("--luv_weight", type=float, default=0.18)
+    parser.add_argument("--lpips_weight", type=float, default=0.45)
+    parser.add_argument("--vgg_weight", type=float, default=0.0)
+    parser.add_argument("--gan_weight", type=float, default=0.08)
     parser.add_argument("--ema_decay", type=float, default=0.9992)
+    parser.add_argument("--export_fp16", action="store_true", default=False)
     parser.add_argument("--use_amp", action="store_true", default=True)
     parser.add_argument("--no_amp", dest="use_amp", action="store_false")
     parser.add_argument("--num_workers", type=int, default=4)
@@ -398,6 +484,6 @@ if __name__ == "__main__":
     parser.add_argument("--save_every", type=int, default=2500)
     parser.add_argument("--hf_token", type=str, default=os.environ.get("HF_TOKEN", ""))
     parser.add_argument("--hf_repo", type=str, default="Thanawanit/Kaggle-Backup")
-    parser.add_argument("--hf_subdir", type=str, default="checkpoints/Phase28_XyetherRepHybrid_v1")
+    parser.add_argument("--hf_subdir", type=str, default="checkpoints/Phase29_XyetherLineFlow_v1")
     args = parser.parse_args()
     train_p23(args)
