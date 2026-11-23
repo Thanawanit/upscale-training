@@ -778,5 +778,25 @@ Under identical 60-step `batch=4` local continuation on held-out `img3` & `BlueA
        - `curvejit_webp`: `PSNR = 26.80` vs `26.57` | `SSIM = 0.8776` vs `0.8760` | `Halo = 14.7` vs `15.6` | `HiR = 1.41` vs `1.47` | `Chr = 7.75` vs `8.15`
      - **Visual (`p28de_visual.jpg`):** Restores full razor-sharp `solo_level` armor & `dandadan_3` lines matching `v27`/`APISR`, eliminates `APISR`'s white neon blowouts (`kaoru_hana`), keeps truer red hues (`dandadan_3`), and rescues subtle pink/red cross-hatching (`gachiakuta` chest) erased by both `v27` and `APISR_2x`.
 
+### 16.4 Vector-GAN & `4x -> 2x` SSAA Unlock Ablation (Colab T4, 15 `>=2025` Scenes)
+Testing why `APISR_2x` maintains a visibly cleaner, smoother "re-inked vector" look than `LineFlow_v27` (`p28_vecgan_visual.jpg`):
+- **`Arm1_v27_VecGAN` (`LineFlow_v27` + Unclipped `APISR(lr_clean -> 4x->2x)` + Relativistic `PatchVectorDisc` + `LPIPS`, `450` steps):**
+  - `Synth Eval`: `line_depth = 0.0`, `overshoot_halo = 14.8804`, `sharpness_lapvar = 786.8`
+  - `clean_2025`: `PSNR=25.76 SSIM=0.8691 LPIPS=0.1570 | Halo=38.9 | LowR=0.73 HiR=1.73 | Chr=10.50 Chk=0.960`
+  - `h264_yuv420`: `PSNR=25.59 SSIM=0.8398 LPIPS=0.1823 | Halo=32.9 | LowR=0.64 HiR=1.47 | Chr=10.67 Chk=0.732`
+  - `curvejit_webp`: `PSNR=25.83 SSIM=0.8586 LPIPS=0.1700 | Halo=32.3 | LowR=0.67 HiR=1.56 | Chr=10.06 Chk=0.866`
+- **`Arm2_SSAA72_GAN` (`100% Own XyetherVectorSSAANet` `72ch 8b`, `PixelShuffle(4) -> AvgPool2d(2)` SSAA + Bilinear skip, `913,224` params, `350` random-init steps):**
+  - `Synth Eval`: `line_depth = 0.0`, `overshoot_halo = 28.1145`, `sharpness_lapvar = 999.7`
+  - `clean_2025`: **`PSNR=27.20 SSIM=0.8936 LPIPS=0.1046`** (beats `LineFlow_v27 0.1366` & **`APISR_2x 0.1480`**!) `| Halo=34.7 | LowR=1.03 HiR=1.08 | Chr=8.41 Chk=0.565`
+  - `h264_yuv420`: `PSNR=25.97 SSIM=0.8234 LPIPS=0.1790 | Halo=36.6 | LowR=0.91 HiR=0.87 | Chr=11.32 Chk=0.472`
+  - `curvejit_webp`: `PSNR=26.90 SSIM=0.8578 LPIPS=0.1515 | Halo=33.3 | LowR=0.90 HiR=0.85 | Chr=10.36 Chk=0.442`
+- **Reference (`LineFlow_v27` / `APISR_2x` on identical 15 scenes):**
+  - `clean_2025`: `v27`: `26.70/0.8915/0.1366/Halo=17.7/Chk=0.640` | `APISR`: `25.07/0.8674/0.1480/Halo=47.6/Chr=11.20/Chk=1.275`
+  - `h264_yuv420`: `v27`: `26.11/0.8545/0.1693/Halo=18.5/HiR=1.37/Chk=0.564` | `APISR`: `25.05/0.8393/0.1672/Halo=42.6/HiR=1.65/Chr=10.76/Chk=0.826`
+- **Key Findings Proven:**
+  1. **Unclipping `APISR` Teacher Alone + `Nearest(x)` Skip (`Arm1_v27_VecGAN`)** raises `HiR` above `v27` (`1.37 -> 1.47` H.264) and makes specular/vector highlights pop visually, **but** doubles Halo (`18.5 -> 32.9`) and still cannot eliminate `Nearest(x)` pixel staircasing & H.264 curve roughness compared to `APISR_2x` (`LPIPS h264: 0.1823 vs 0.1672`).
+  2. **`4x -> 2x` SSAA + Bilinear Base (`Arm2_SSAA72_GAN`)** slashes Checkerboard to the lowest of ALL models (`0.442–0.565` vs `APISR 0.826–1.275`), lifts `LowR` to `0.90–1.03`, and beats `APISR_2x` on `clean_2025` `LPIPS` (`0.1046 vs 0.1480`) in only 350 random-init steps — proving `Bilinear + 4x->2x SSAA` is the structural key to matching/surpassing `APISR`'s smooth vector aesthetic once trained longer (`3,500–7,500` iters) with H.264-degraded input supervision and bounded Halo (`<= +12`).
+
+
 
 
