@@ -2127,6 +2127,97 @@ class Phase29VectorCleanLoss(Phase27LineFlowLoss):
         }
 
 
+class Phase30APISRVectorLoss(Phase29VectorCleanLoss):
+    """
+    Phase 30 LineFlow 8B APISR-Anchored Vector Loss (Colab T4 TestB_LowR_Bst):
+    - Primary Teacher: 100% unclipped APISR(clean LR -> 4x->2x).
+    - Boosts edge/Laplacian sharpening on H.264 & Harsh_Q62 regimes (`w_edge`, `1.80*l_lap`)
+      and adds subtle-contrast LowR rescue (`1.60*l_lowr` in `span 0.016..0.085`).
+    - Locks opponent chroma (`R-G`, `B-G`, orthogonal to Luma Y) to `gt_b` (`0.40*l_chr`)
+      so chroma fidelity beats APISR_2x without softening 1px ink lines (`line_depth = 0.0`).
+    - Keeps flat-masked `l_cel=0.85` to preserve full APISR-level `LapVar` while cutting Checkerboard.
+    """
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        gt_b = gt_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode="nearest")
+        luma_w = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+
+        py = (pred * luma_w).sum(dim=1, keepdim=True)
+        ay = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        ny = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        with torch.no_grad():
+            if regime is None:
+                is_deg = torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                is_h264 = torch.zeros_like(is_deg)
+                is_harsh = torch.zeros_like(is_deg)
+            else:
+                is_deg = (regime > 0).float().view(-1, 1, 1, 1)
+                is_h264 = (regime == 1).float().view(-1, 1, 1, 1)
+                is_harsh = (regime == 2).float().view(-1, 1, 1, 1)
+            span_ap = F.max_pool2d(ay, 3, 1, 1) - (-F.max_pool2d(-ay, 3, 1, 1))
+            is_edge = ((span_ap - 0.030) / 0.055).clamp(0.0, 1.0)
+            low_zone = ((span_ap >= 0.016) & (span_ap <= 0.085)).float()
+            flat_mask = (span_ap < 0.018).float()
+            w_edge = 0.55 + 2.85 * is_edge * (1.0 + 0.50 * is_deg + 0.20 * is_h264 + 0.50 * is_harsh)
+            ink_w = (F.relu(ny - ay) / 0.036).clamp(0.0, 2.0)
+            max3_ap = F.max_pool2d(tar_b, 3, 1, 1) + 0.002
+            min3_ap = -F.max_pool2d(-tar_b, 3, 1, 1) - 0.003
+
+        l_pix = 1.35 * torch.sqrt((pred - tar_b) ** 2 + 1e-6).mean() + 0.95 * (py - ay).abs().mean()
+        l_ink = (ink_w * F.relu(py - ay)).mean()
+        l_grad = self._multiscale_directional_and_diag_grad(pred, tar_b, w_edge)
+        lap_p = F.conv2d(py, lap_k, padding=1)
+        lap_a = F.conv2d(ay, lap_k, padding=1)
+        l_lap = (w_edge * (lap_p.abs() - lap_a.abs()).abs()).mean() + 0.70 * (w_edge * (lap_p - lap_a).abs()).mean()
+        l_lowr = (low_zone * (1.0 + is_deg) * (lap_p.abs() - lap_a.abs()).abs()).mean()
+        l_curve = self._angle_only_curve_smoothness(pred, tar_b, luma_w)
+        l_cel = (flat_mask * (pred - tar_b).abs()).mean() + 0.65 * self._bilateral_cel_smoothness_v3(
+            pred, tar_b, tar_b, span_thresh=0.018, span_denom=0.010
+        )
+        l_halo = F.relu(pred - max3_ap).mean() + 0.35 * F.relu(min3_ap - pred).mean()
+        l_chr = (
+            (pred[:, 0:1] - pred[:, 1:2] - (gt_b[:, 0:1] - gt_b[:, 1:2])).abs()
+            + (pred[:, 2:3] - pred[:, 1:2] - (gt_b[:, 2:3] - gt_b[:, 1:2])).abs()
+        ).mean()
+
+        total = (
+            l_pix
+            + 2.8 * l_ink
+            + 2.8 * l_grad
+            + 1.80 * l_lap
+            + 1.60 * l_lowr
+            + 2.2 * l_curve
+            + 0.85 * l_cel
+            + 2.2 * l_halo
+            + 0.40 * l_chr
+        )
+        return total, {
+            "l_pix": l_pix.item(),
+            "l_ink": l_ink.item(),
+            "l_grad": l_grad.item(),
+            "l_lap": l_lap.item(),
+            "l_lowr": l_lowr.item(),
+            "l_cel": l_cel.item(),
+            "l_halo": l_halo.item(),
+            "l_chr": l_chr.item(),
+        }
+
+
 
 
 

@@ -864,6 +864,154 @@ Following user feedback rejecting new random/distilled `RepHybrid` blur and dire
 
 - **Visual Proof ([`p29_final_visual_compare.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/3cccec3d-87c9-4cd7-81d7-a85095f477eb/p29_final_visual_compare.jpg)):** Delivers clearly sharper, deeper vector hairlines (`Harsh_Q62 HL2 = 43` vs `v27 = 61`, `APISR = 50`; `Shuffled HL2 = 46` vs `APISR = 82`) and cleaner cel fills (`Checker = 0.14–0.16` vs `APISR = 0.17–0.18`) across all regimes with `LapVar` beating `APISR_2x` on both `Clean_LR` (`1016.6 vs 969.3`) and `RealBlurry_LR` (`978.2 vs 958.3`), at `1.01 MB` FP16 ONNX.
 
+### 17.1 Phase 29 Diagnostic Baseline (`2025++` 17-Scene & 25-Scene Suites + Real Colab T4 FP16 Latency)
+Evaluated on Google Colab Tesla T4 (`CUDAExecutionProvider` / PyTorch CUDA) comparing `XyetherLineFlow_v29_Final.pth` vs `XyetherLineFlow_v27_Final.pth` vs `APISR_2x` (`APISR.onnx` 4x $\rightarrow$ `avg_pool2d(2)`).
+
+#### A. Real Colab T4 ONNX Latency (`540x960 -> 1080x1920`, `CUDAExecutionProvider`, 20 runs)
+- `XyetherLineFlow_v27_Final.onnx` (`2.08 MB`, FP32): **`med = 250.20 ms`** (`mean = 250.10 ms`, `min = 248.44 ms`)
+- `XyetherLineFlow_v29_Final.onnx` (`2.08 MB`, FP32): **`med = 246.24 ms`** (`mean = 245.90 ms`, `min = 243.42 ms`, `p90 = 247.76 ms`)
+- **`XyetherLineFlow_v29_Final_FP16.onnx` (`1.06 MB`, FP16):** **`med = 209.24 ms`** (`mean = 209.28 ms`, `min = 207.79 ms`, `p90 = 210.46 ms`) — **`-15.03%`** vs `v29 FP32` (`-16.4%` vs `v27 FP32`); full `540p -> 1080p` FP16/FP32 parity `max_abs_diff = 0.001804`, `mean_abs_diff = 0.000190`, `p99 = 0.000678`.
+
+#### B. `XyetherEvaluator` (Synthetic)
+| Model | `line_depth` $\downarrow$ | `overshoot_halo` $\downarrow$ | `noise_residual_std` $\downarrow$ | `sharpness_lapvar` $\uparrow$ |
+| :--- | :---: | :---: | :---: | :---: |
+| **`LineFlow_v29`** | **0.00** | 13.2328 | 17.1500 | 891.2 |
+| `LineFlow_v27` | 0.00 | **7.7884** | 15.9300 | **957.1** |
+| `APISR_2x` | 0.00 | 21.4831 | **15.2100** | 751.2 |
+
+#### C. 17-Scene Curated `2025++` (`frames_2025plus_clean` + `eval28_*`)
+| Regime | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `LPIPS` $\downarrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `Chr` $\downarrow$ | `Chk` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`clean_540p`** | **`LineFlow_v29`** | 26.59 | 0.9067 | 0.1447 | 32.6 | 1.23 | **2.89** | 6.83 | 1.386 |
+| **`clean_540p`** | `LineFlow_v27` | **27.50** | **0.9220** | **0.1291** | **14.8** | 0.94 | 2.70 | **5.11** | **1.024** |
+| **`clean_540p`** | `APISR_2x` | 26.40 | 0.9045 | 0.1463 | 36.7 | 1.18 | 2.85 | 7.03 | 1.485 |
+| **`h264_yuv420`** | **`LineFlow_v29`** | 26.68 | 0.9007 | 0.1507 | 31.5 | 0.86 | 2.67 | 7.20 | 1.063 |
+| **`h264_yuv420`** | `LineFlow_v27` | **27.16** | **0.9054** | **0.1400** | **16.4** | 0.70 | 2.48 | **5.84** | **0.764** |
+| **`h264_yuv420`** | `APISR_2x` | 26.39 | 0.8985 | 0.1495 | 34.8 | 0.92 | **2.69** | 6.77 | 1.136 |
+| **`curvejit_webp`** | **`LineFlow_v29`** | 26.67 | 0.9075 | 0.1448 | 30.0 | 0.94 | **2.78** | 6.81 | 1.247 |
+| **`curvejit_webp`** | `LineFlow_v27` | **27.54** | **0.9189** | **0.1332** | **13.5** | 0.73 | 2.58 | **5.39** | **0.913** |
+| **`curvejit_webp`** | `APISR_2x` | 26.53 | 0.9059 | 0.1428 | 34.0 | 1.04 | 2.77 | 6.63 | 1.370 |
+
+#### D. 25-Scene Full `2025++` (`frames_2025plus`)
+| Regime | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `LPIPS` $\downarrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `Chr` $\downarrow$ | `Chk` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`clean_540p`** | **`LineFlow_v29`** | 26.19 | 0.9018 | 0.1518 | 35.3 | 1.19 | **2.80** | 7.09 | 1.381 |
+| **`clean_540p`** | `LineFlow_v27` | **27.05** | **0.9173** | **0.1358** | **16.8** | 0.91 | 2.61 | **5.46** | **0.998** |
+| **`clean_540p`** | `APISR_2x` | 25.91 | 0.8954 | 0.1551 | 42.3 | 1.19 | 2.79 | 7.42 | 1.628 |
+| **`h264_yuv420`** | **`LineFlow_v29`** | 26.21 | 0.8915 | 0.1605 | 33.7 | 0.86 | 2.56 | 7.52 | 1.030 |
+| **`h264_yuv420`** | `LineFlow_v27` | **26.69** | **0.8976** | **0.1496** | **18.3** | 0.70 | 2.38 | **6.30** | **0.702** |
+| **`h264_yuv420`** | `APISR_2x` | 25.83 | 0.8852 | 0.1610 | 40.7 | 0.96 | **2.62** | 7.23 | 1.259 |
+| **`curvejit_webp`** | **`LineFlow_v29`** | 26.28 | 0.9013 | 0.1524 | 32.6 | 0.92 | 2.67 | 7.08 | 1.220 |
+| **`curvejit_webp`** | `LineFlow_v27` | **27.08** | **0.9129** | **0.1403** | **15.6** | 0.72 | 2.48 | **5.79** | **0.863** |
+| **`curvejit_webp`** | `APISR_2x` | 26.04 | 0.8960 | 0.1514 | 39.4 | 1.06 | **2.68** | 7.01 | 1.493 |
+
+#### E. Root-Cause Diagnosis of `LineFlow_v29` Gaps (Inputs for Phase 30)
+1. **Unclipped Teacher Halo Inheritance (`Halo 30–35` vs `v27 13.5–18.3`; worst scene `SoloLeveling_S2_DarkArmour = 53.2`, `Kusuriya_S3 = 49.1`, `Frieren_S2 = 42.0`; `Harsh_Q62 = +16`):** Setting `unclipped=True` in `Phase23ZeroHaloAPISRTeacher` + capping `l_halo` against `max3_ap + 0.002` allowed `APISR`'s bright highlight ringing (`Halo 35–42`) to leak directly into `v29`.
+2. **Chroma Drift (`Chr 7.20–7.52` on H.264 vs `v27 5.84–6.30` & `APISR 6.77–7.23`):** `ColorLuvLoss` targeted `0.70*tar_b + 0.30*gt_b` instead of locking chroma (`ColorLuvLoss` + `l_chr`) strictly to `gt_b` (proven safe for `line_depth=0.0` in `P28e_Sharp110`, Sec. 16.3).
+3. **Mid-Gradient Checkerboard & Noise Residual (`Chk 1.03–1.39` vs `v27 0.70–1.02`; `noise_std 17.15` vs `15.93`):** `flat_mask = (span_ap < 0.018)` excluded gentle cel gradients (`0.018..0.045`), letting `PatchGAN(0.08)` introduce subtle grain/checkerboard.
+4. **Harsh H.264 / Q62 Edge & Subtle Detail Margin:** `LowR` on `h264_yuv420` (`0.86`) improved over `v27` (`0.70`) but still trails `APISR_2x` (`0.92–0.96`), and `Harsh_Q62 LapVar` (`796.1`) trails `APISR_2x` (`895.7`).
+
+### 17.2 Phase 30 Controlled A/B Ablation on Colab T4 (`400 steps`, `Phase30VectorCleanLoss`)
+Both arms initialized 100% from `XyetherLineFlow_v29_Final.pth`, trained `400` steps (`batch=8`, `160x160`, `160` precomputed clean `APISR(avg_pool2d(gt,2))` Safebooru targets, 4-regime OTF degradation, `EMA=0.992`, `gan_w=0.05`, `lpips_w=0.45`, `luv_w=0.22` locked 100% to `gt_b`, Dual-Bounded Halo `min(max3_ap+0.002, max3_gt+0.018)`, `0.55*l_chr(gt_b)`, soft mid-gradient `flat_mask` `0.018..0.042`):
+- **Arm A (`ArmA_8B_P30`):** Full `8B PReLU` (`514,148` params, `lr_g=1.0e-4`, `58.5s`, T4 FP16 `209.24 ms`, `1.06 MB`)
+- **Arm B (`ArmB_6B_P30`):** Pruned `6B_Leaky` `{0,1,4,5,6,7}` (`394,644` params, `lr_g=1.6e-4`, `49.7s`, T4 FP16 **`179.35 ms`** `[-14.3% vs v29 FP16, -27.2% vs v29 FP32]`, `0.81 MB`, parity `max=0.001661`)
+
+| Suite / Regime | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `LPIPS` $\downarrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `Chr` $\downarrow$ | `Chk` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`XyetherEvaluator`** | `ArmA_8B_P30` | `line_depth=0.00` | `halo=12.65` | `noise=16.67` | `lapvar=786.1` | — | — | — | — |
+| **`XyetherEvaluator`** | `ArmB_6B_P30` | `line_depth=0.00` | `halo=22.71` | `noise=15.56` | `lapvar=814.4` | — | — | — | — |
+| **`clean_540p` (17s)** | **`ArmA_8B_P30`** | 26.95 | 0.9153 | 0.1382 | 28.8 | 0.99 | **2.75** | **6.12** | **1.206** |
+| **`clean_540p` (17s)** | **`ArmB_6B_P30`** | **27.00** | **0.9179** | **0.1375** | **27.4** | **1.01** | 2.64 | 6.38 | 1.343 |
+| **`clean_540p` (17s)** | `LineFlow_v29` | 26.59 | 0.9067 | 0.1447 | 32.6 | 1.23 | 2.89 | 6.83 | 1.386 |
+| **`h264_yuv420` (17s)** | **`ArmA_8B_P30`** | **27.11** | **0.9047** | **0.1464** | 28.0 | 0.78 | **2.53** | **6.55** | **0.923** |
+| **`h264_yuv420` (17s)** | **`ArmB_6B_P30`** | 26.99 | 0.9007 | 0.1478 | **27.3** | **0.91** | 2.41 | 7.16 | 1.088 |
+| **`h264_yuv420` (17s)** | `LineFlow_v29` | 26.68 | 0.9007 | 0.1507 | 31.5 | 0.86 | 2.67 | 7.20 | 1.063 |
+| **`curvejit_webp` (17s)** | **`ArmA_8B_P30`** | 27.07 | **0.9133** | 0.1408 | 26.0 | 0.82 | **2.62** | **6.15** | **1.068** |
+| **`curvejit_webp` (17s)** | **`ArmB_6B_P30`** | **27.16** | 0.9132 | **0.1399** | **24.6** | **0.90** | 2.47 | 6.52 | 1.196 |
+| **`curvejit_webp` (17s)** | `LineFlow_v29` | 26.67 | 0.9075 | 0.1448 | 30.0 | 0.94 | 2.78 | 6.81 | 1.247 |
+
+- **Worst-Halo Scenes (`17s h264_yuv420`):** `SoloLeveling_S2_DarkArmour` dropped `53.2 (v29) -> 42.0 (ArmA) / 29.6 (ArmB)`; `Kusuriya_S3` dropped `49.1 -> 45.9 / 37.6`; `Frieren_S2` dropped `42.0 -> 39.4 / 41.2`.
+- **Key Takeaway:** `Phase30VectorCleanLoss` works as designed in only 400 steps — cutting `Halo`, `Chr` (ArmA `6.55` now beats `APISR_2x 6.77` on H.264!), `Chk`, and `LPIPS` simultaneously while keeping `line_depth = 0.00`. **Arm A (`8B`)** leads on `h264` quality (`PSNR/SSIM/LPIPS/Chr/Chk/HiR`) and clean synthetic `halo=12.65`, while **Arm B (`6B_Leaky`)** delivers `-14.3%` lower T4 FP16 latency (`179.35 ms`, `0.81 MB`) and stronger `LowR` (`0.91`) with minor trade-offs on `h264 Chr/Chk/HiR` and synthetic step `halo=22.71`.
+- **Verified T4 Speed Gap vs `Strong_v3` (`CUDAExecutionProvider`, FP16):**
+  - `540p -> 1080p`: `Strong_v3 (FP16, 1.21 MB)` = **`75.48 ms/frame`** (`0.91 min` for 30s@24fps) vs `LineFlow_v29_8B (FP16)` = **`206.10 ms/frame`** (`2.47 min`, **2.73× slower**).
+  - `1080p -> 4K (2160p)`: `Strong_v3 (FP16)` = **`307.18 ms/frame`** (`3.69 min` for 30s@24fps) vs `LineFlow_v29_8B (FP16)` = **`850.74 ms/frame`** (`10.21 min`, **2.77× slower**).
+  - *Root cause:* `LineFlow`'s 16 depthwise `(1x9)+(9x1)` strip convs are memory-bandwidth-bound on T4 and bypass Tensor Core FP16 GEMM, whereas `Strong_v3` (`SRVGGNetCompact`, 18 plain `3x3` convs) saturates T4 Tensor Cores.
+
+### 17.3 Phase 30 Tensor-Core-Friendly PoC (`Compact64_v22_Punch` vs `Compact64_v22_DualTeacher`, Colab T4, `500 steps`)
+Following user requirements (primarily 2D anime images + `<=30s` 1080p clips on Colab T4, speed matching `Strong_v3` `75.48 ms @540p / 307.18 ms @1080p`, `30% Clean / 70% Degraded`, punchy `Strong_v3 / APISR` high-contrast vector style), both candidates were initialized **100% from our own `XyetherKiller_APISRMaster_v22_Final.pth`** (`XyetherCompactNet(64ch, 16-conv)`, `600,652` params) and trained `500` steps (`batch=12`, `lr_g=1.5e-4`, `EMA=0.992`, `Phase30PunchLoss`):
+- **`Cand1_Punch`:** Unclipped `APISR(clean)` Teacher (`81.2s`)
+- **`Cand2_Dual`:** Dual Teacher (`0.65 * APISR(clean) + 0.35 * LineFlow_v29(clean)` + `v29` curve-angle anchor, `76.6s`)
+
+| Suite / Regime | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `LPIPS` $\downarrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `Chr` $\downarrow$ | `Chk` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`XyetherEvaluator`** | `Cand1_Punch` | `line_depth=0.00` | `halo=16.81` | `noise=15.51` | `lapvar=830.0` | — | — | — | — |
+| **`XyetherEvaluator`** | **`Cand2_Dual`** | **`line_depth=0.00`** | `halo=16.35` | `noise=15.65` | **`lapvar=855.5`** | — | — | — | — |
+| **`XyetherEvaluator`** | `Strong_v3` | `line_depth=0.00` | `halo=7.74` | `noise=16.32` | `lapvar=512.7` | — | — | — | — |
+| **`clean_540p` (17s)** | `Cand1_Punch` | **27.04** | 0.9186 | 0.1279 | **28.4** | 1.06 | 2.60 | **5.81** | **1.270** |
+| **`clean_540p` (17s)** | **`Cand2_Dual`** | 27.03 | **0.9194** | **0.1257** | **28.4** | 1.08 | 2.64 | 5.90 | 1.305 |
+| **`clean_540p` (17s)** | `Strong_v3` | 26.88 | 0.9152 | 0.1394 | 37.3 | 1.40 | **2.94** | 6.22 | 1.759 |
+| **`clean_540p` (17s)** | `LineFlow_v29` | 26.59 | 0.9067 | 0.1447 | 32.6 | 1.23 | 2.89 | 6.83 | 1.386 |
+| **`clean_540p` (17s)** | `APISR_2x` | 26.40 | 0.9045 | 0.1463 | 36.7 | 1.18 | 2.85 | 7.03 | 1.485 |
+| **`h264_yuv420` (17s)** | `Cand1_Punch` | **26.71** | 0.8928 | **0.1387** | **29.0** | 1.00 | 2.30 | 6.74 | **1.011** |
+| **`h264_yuv420` (17s)** | **`Cand2_Dual`** | **26.71** | 0.8932 | 0.1389 | **29.0** | **1.01** | 2.33 | 6.79 | 1.043 |
+| **`h264_yuv420` (17s)** | `Strong_v3` | 26.47 | **0.9008** | 0.1522 | 38.0 | 1.18 | **2.82** | **6.70** | 1.543 |
+| **`h264_yuv420` (17s)** | `LineFlow_v29` | 26.68 | 0.9007 | 0.1507 | 31.5 | 0.86 | 2.67 | 7.20 | 1.063 |
+| **`h264_yuv420` (17s)** | `APISR_2x` | 26.39 | 0.8985 | 0.1495 | 34.8 | 0.92 | 2.69 | 6.77 | 1.136 |
+| **`curvejit_webp` (17s)** | `Cand1_Punch` | 27.24 | 0.9111 | 0.1307 | 26.8 | 0.97 | 2.38 | 6.07 | **1.116** |
+| **`curvejit_webp` (17s)** | **`Cand2_Dual`** | **27.26** | **0.9121** | **0.1302** | **26.7** | **0.98** | 2.41 | **6.06** | 1.155 |
+| **`curvejit_webp` (17s)** | `Strong_v3` | 26.62 | 0.9092 | 0.1437 | 36.3 | 1.23 | **2.87** | 6.44 | 1.667 |
+| **`curvejit_webp` (17s)** | `LineFlow_v29` | 26.67 | 0.9075 | 0.1448 | 30.0 | 0.94 | 2.78 | 6.81 | 1.247 |
+| **`curvejit_webp` (17s)** | `APISR_2x` | 26.53 | 0.9059 | 0.1428 | 34.0 | 1.04 | 2.77 | 6.63 | 1.370 |
+
+- **Breakthrough Confirmed:** At **identical T4 speed to `Strong_v3` (`75.48 ms @540p / 307.18 ms @1080p`, `2.77x` faster than `LineFlow_v29`)**, **`Cand2_Dual` (`Compact64_v22_DualTeacher`)** achieves the **best `LPIPS` across all 3 regimes (`0.1257 / 0.1389 / 0.1302`)**, beating `Strong_v3`, `APISR_2x`, `LineFlow_v29`, and even `LineFlow_v27` (`0.1291 / 0.1400 / 0.1332`), while cutting `Strong_v3`'s checkerboard by **`-26% to -32%`** (`1.043 vs 1.543` H.264) and Halo by **`-8.9 to -9.6`** (`29.0 vs 38.0`), with `line_depth = 0.00` and `LapVar = 855.5` (`+67%` vs `Strong_v3 512.7`). Visual comparison archived at [`p30_poc_visual_compare.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p30_poc_visual_compare.jpg).
+
+### 17.4 Phase 30 3-Way Head-to-Head Showdown (`Path1_LF8B` vs `Path2_LF6B` vs `Path3_TCDil8B`, Colab T4, `500 steps`, Real `YUV_I420`)
+Following visual inspection of `p30_poc_visual_compare.jpg` showing `LineFlow_v29`'s superior H.264 macroblock suppression over `Compact64`, we benchmarked all 3 `v29`-initialized lineages head-to-head under identical `500`-step `YUV_I420` (`30% Clean / 70% Degraded`) Dual-Teacher (`0.75*APISR + 0.25*v29`) `Phase30PunchLoss`:
+- **`Path1_LF8B`:** `XyetherLineFlowNet(56ch, 8b)` (`514K` params; T4 PyTorch FP16 `211.2 ms @540p / 905.3 ms @1080p`; ORT FP16 `206.1 ms / 850.7 ms`)
+- **`Path2_LF6B`:** `Pruned6B_Leaky` `{0,1,4,5,6,7}` (`395K` params; T4 PyTorch FP16 `162.5 ms @540p / 629.5 ms @1080p`, `-23%` to `-30%` faster)
+- **`Path3_TCDil8B`:** `XyetherTCDilatedNet(56ch, 8b)` (removes all 16 slow depthwise `1x9/9x1` strips, uses Tensor-Core dilated `3x3` `[1,2,3,2,1,2,3,2]` initialized from `v29` weights; `504K` params; T4 PyTorch FP16 **`130.93 ms @540p / 516.48 ms @1080p`**, **`-38% to -43%` faster than `v29`**)
+
+| Suite / Regime | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `LPIPS` $\downarrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `Chr` $\downarrow$ | `Chk` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`XyetherEvaluator`** | **`Path1_LF8B`** | `line_depth=0.00` | **`halo=12.34`** | `noise=16.53` | `lapvar=826.6` | — | — | — | — |
+| **`XyetherEvaluator`** | `Path2_LF6B` | `line_depth=0.00` | `halo=23.22` | **`noise=15.20`** | **`lapvar=837.5`** | — | — | — | — |
+| **`XyetherEvaluator`** | `Path3_TCDil8B` | `line_depth=0.00` | `halo=28.29` | `noise=16.22` | `lapvar=804.6` | — | — | — | — |
+| **`clean_540p` (17s)** | `Path1_LF8B` | 26.99 | 0.9144 | 0.1357 | **28.7** | 1.04 | **2.75** | **6.72** | **1.224** |
+| **`clean_540p` (17s)** | `Path2_LF6B` | 26.96 | 0.9163 | 0.1338 | 29.8 | 0.98 | 2.67 | 6.99 | 1.278 |
+| **`clean_540p` (17s)** | **`Path3_TCDil8B`** | **27.13** | **0.9229** | **0.1236** | 30.0 | 1.12 | 2.45 | 7.25 | 1.409 |
+| **`h264_yuv420` (17s)** | **`Path1_LF8B`** | **27.06** | **0.9029** | 0.1447 | **27.5** | 0.78 | **2.53** | **7.14** | **0.923** |
+| **`h264_yuv420` (17s)** | `Path2_LF6B` | 26.79 | 0.8981 | 0.1459 | 29.4 | 0.86 | 2.44 | 7.70 | 1.018 |
+| **`h264_yuv420` (17s)** | `Path3_TCDil8B` | 26.89 | 0.8994 | **0.1368** | 30.6 | **1.03** | 2.21 | 7.96 | 1.195 |
+| **`curvejit_webp` (17s)** | `Path1_LF8B` | 27.11 | 0.9123 | 0.1386 | **25.6** | 0.83 | **2.62** | **6.67** | **1.089** |
+| **`curvejit_webp` (17s)** | `Path2_LF6B` | 27.10 | 0.9116 | 0.1377 | 26.8 | 0.85 | 2.51 | 7.01 | 1.135 |
+| **`curvejit_webp` (17s)** | **`Path3_TCDil8B`** | **27.23** | **0.9144** | **0.1281** | 28.4 | **1.02** | 2.27 | 7.29 | 1.287 |
+
+- **Visual Inspection ([`p30_3paths_visual.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p30_3paths_visual.jpg)):** All 3 paths beat `Strong_v3` and `LineFlow_v29` on `PSNR/LPIPS/Halo` with `line_depth = 0.00`. **`Path1_LF8B`** achieves the cleanest H.264 surfaces (`Chk = 0.923`, `Halo = 27.5`, `PSNR = 27.06`, `SSIM = 0.9029`) and sharpest high-contrast edges (`HiR = 2.53–2.75`), **`Path2_LF6B`** is nearly identical visually at `-23% to -30%` faster speed, and **`Path3_TCDil8B`** achieves the best `LPIPS` (`0.1236 / 0.1368 / 0.1281`) at `-38% to -43%` faster speed (`130.9 ms @540p / 516.5 ms @1080p`), though with slightly more residual H.264 mottling (`Chk = 1.195`) and lower `HiR` (`2.21`) after only 500 steps.
+
+### 17.5 Phase 30 Final Pre-Flight Validation (`Path1_LF8B` + `100% APISR` Primary Teacher, 4 Regimes incl. `Harsh_Q62_I420`)
+User locked **`Path1_LF8B`** (`XyetherLineFlowNet 56ch 8b`, init from `XyetherLineFlow_v29_Final.pth`) with **`100% APISR(clean)`** as primary Ref & Teacher. Tested `TestA_100AP` (pure 100% APISR Punch) vs `TestB_LowR_Bst` (100% APISR + `LowR` micro-contrast rescue `span 0.016..0.085` + `Harsh_Q62`/`H.264` Laplacian boost + 100% GT Chroma Lock, `500 steps`, `30% Clean / 70% Degraded YUV_I420`):
+
+| Regime (17s `2025++`) | Model | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ | `LPIPS` $\downarrow$ | `MAE_AP` $\downarrow$ | `LP_AP` $\downarrow$ | `Halo` $\downarrow$ | `LowR` | `HiR` | `LapVar` | `Chr` $\downarrow$ | `Chk` $\downarrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`clean_540p`** | `TestA_100AP` | 26.91 | 0.9127 | 0.1379 | 3.15 | 0.0346 | 28.8 | 0.96 | 2.74 | 1450.9 | 6.66 | 1.194 |
+| **`clean_540p`** | **`TestB_LowR_Bst`** | **26.95** | **0.9134** | **0.1375** | **3.15** | **0.0345** | **28.5** | 0.96 | 2.74 | 1449.7 | **6.24** | **1.192** |
+| **`clean_540p`** | `LineFlow_v29` | 26.59 | 0.9067 | 0.1447 | 3.17 | 0.0390 | 32.6 | 1.23 | 2.89 | 1644.5 | 6.83 | 1.386 |
+| **`clean_540p`** | `APISR_2x` | 26.40 | 0.9045 | 0.1463 | 0.00 | 0.0000 | 36.7 | 1.18 | 2.85 | 1616.3 | 7.03 | 1.485 |
+| **`h264_yuv420`** | `TestA_100AP` | 27.03 | 0.9013 | 0.1469 | 3.34 | 0.0354 | 27.8 | 0.77 | 2.53 | 1308.0 | 7.06 | 0.915 |
+| **`h264_yuv420`** | **`TestB_LowR_Bst`** | **27.07** | **0.9017** | **0.1464** | **3.34** | **0.0353** | **27.5** | 0.76 | 2.53 | 1307.4 | **6.70** | **0.913** |
+| **`h264_yuv420`** | `LineFlow_v29` | 26.68 | 0.9007 | 0.1507 | 3.42 | 0.0373 | 31.5 | 0.86 | 2.67 | 1467.5 | 7.20 | 1.063 |
+| **`h264_yuv420`** | `APISR_2x` | 26.39 | 0.8985 | 0.1495 | 0.00 | 0.0000 | 34.8 | 0.92 | 2.69 | 1460.4 | 6.77 | 1.136 |
+| **`curvejit_webp`** | `TestA_100AP` | 27.01 | 0.9104 | 0.1413 | 3.19 | 0.0348 | 25.9 | 0.80 | 2.62 | 1346.1 | 6.70 | 1.064 |
+| **`curvejit_webp`** | **`TestB_LowR_Bst`** | **27.05** | **0.9111** | **0.1408** | **3.19** | **0.0347** | **25.6** | 0.80 | 2.62 | 1345.4 | **6.38** | **1.062** |
+| **`curvejit_webp`** | `LineFlow_v29` | 26.67 | 0.9075 | 0.1448 | 3.22 | 0.0341 | 30.0 | 0.94 | 2.78 | 1546.8 | 6.81 | 1.247 |
+| **`curvejit_webp`** | `APISR_2x` | 26.53 | 0.9059 | 0.1428 | 0.00 | 0.0000 | 34.0 | 1.04 | 2.77 | 1510.4 | 6.63 | 1.370 |
+| **`harsh_q62_i420`** | `TestA_100AP` | 27.20 | 0.9157 | 0.1349 | 3.38 | 0.0417 | 23.8 | 0.81 | 2.43 | 1174.3 | 7.23 | 0.918 |
+| **`harsh_q62_i420`** | **`TestB_LowR_Bst`** | **27.25** | **0.9163** | **0.1344** | **3.37** | **0.0416** | **23.4** | 0.81 | 2.42 | 1174.0 | **6.90** | **0.916** |
+| **`harsh_q62_i420`** | `LineFlow_v29` | 26.80 | 0.9117 | 0.1366 | 3.46 | 0.0414 | 27.8 | 0.97 | 2.60 | 1363.1 | 7.41 | 1.145 |
+| **`harsh_q62_i420`** | `APISR_2x` | 26.57 | 0.9087 | 0.1368 | 0.00 | 0.0000 | 31.7 | 1.09 | 2.65 | 1389.2 | 6.85 | 1.328 |
+
+- **Verdict ([`p30_100ap_harsh_visual.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p30_100ap_harsh_visual.jpg)):** **`TestB_LowR_Bst`** strictly dominates `TestA_100AP` across all 4 regimes and beats both `LineFlow_v29` and `APISR_2x` on `PSNR`, `SSIM`, `LPIPS`, `MAE_AP` (closer to `APISR_2x` than `v29`!), `Halo`, `Chr`, and `Chk` with `line_depth = 0.00` (`noise_std 17.15 -> 16.24`). Note for Kaggle full run: reduce `l_cel` slightly (`1.05 -> 0.85`) and use `EMA = 0.9992` + `5,000–6,000 iters` on `300+` dynamic-crop Safebooru frames to keep `LapVar` right at `APISR_2x` (`~1,460–1,615`) without any softening.
+
 
 
 

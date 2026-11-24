@@ -22,10 +22,18 @@ class AnimeOTFDataset(Dataset):
        compression (75%) and exact Luma-Preserving Warm<->Cool reflection (R <-> C) so both Warm R
        and Cool GB sub-trunks learn wide-radius 4:2:0 de-JPEG while keeping dark ink outlines 100% invariant.
     """
-    def __init__(self, data_dir: str, patch_size: int = 192, repeat: int = 20, return_regime: bool = False):
+    def __init__(
+        self,
+        data_dir: str,
+        patch_size: int = 192,
+        repeat: int = 20,
+        return_regime: bool = False,
+        clean_prob: float = 0.20,
+    ):
         self.patch_size = patch_size
         self.repeat = repeat
         self.return_regime = return_regime
+        self.clean_prob = float(clean_prob)
 
         data_path = Path(data_dir)
         valid_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
@@ -181,7 +189,12 @@ class AnimeOTFDataset(Dataset):
                 ok, enc = cv2.imencode('.jpg', im, [int(cv2.IMWRITE_JPEG_QUALITY), q])
             return cv2.imdecode(enc, cv2.IMREAD_COLOR) if ok else im
 
-        if regime < 0.20:
+        deg_span = max(1e-6, 1.0 - self.clean_prob)
+        t_clean = self.clean_prob
+        t_med = t_clean + deg_span * (0.30 / 0.80)
+        t_harsh = t_med + deg_span * (0.20 / 0.80)
+
+        if regime < t_clean:
             regime_id = 0
             # Clean / Mild regime
             if random.random() < 0.45:
@@ -189,7 +202,7 @@ class AnimeOTFDataset(Dataset):
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=cv2.INTER_AREA)
             if random.random() < 0.20:
                 lr_patch = apply_codec(lr_patch, 88, 96, webp_p=0.25)
-        elif regime < 0.50:
+        elif regime < t_med:
             regime_id = 1
             # Medium RealBlurry / 2025+ Stream 1080p YUV 4:2:0 regime
             lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.45, sigma_max=1.10)
@@ -203,7 +216,7 @@ class AnimeOTFDataset(Dataset):
             lr_patch = apply_yuv420(lr_patch)
             if random.random() < 0.85:
                 lr_patch = apply_codec(lr_patch, 68, 92, webp_p=0.30)
-        elif regime < 0.70:
+        elif regime < t_harsh:
             regime_id = 2
             # Harsh Compressed Web / Stream YUV 4:2:0 regime
             sx = random.uniform(0.60, 1.35)
