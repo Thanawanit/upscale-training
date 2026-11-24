@@ -1012,6 +1012,39 @@ User locked **`Path1_LF8B`** (`XyetherLineFlowNet 56ch 8b`, init from `XyetherLi
 
 - **Verdict ([`p30_100ap_harsh_visual.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p30_100ap_harsh_visual.jpg)):** **`TestB_LowR_Bst`** strictly dominates `TestA_100AP` across all 4 regimes and beats both `LineFlow_v29` and `APISR_2x` on `PSNR`, `SSIM`, `LPIPS`, `MAE_AP` (closer to `APISR_2x` than `v29`!), `Halo`, `Chr`, and `Chk` with `line_depth = 0.00` (`noise_std 17.15 -> 16.24`). Note for Kaggle full run: reduce `l_cel` slightly (`1.05 -> 0.85`) and use `EMA = 0.9992` + `5,000–6,000 iters` on `300+` dynamic-crop Safebooru frames to keep `LapVar` right at `APISR_2x` (`~1,460–1,615`) without any softening.
 
+---
+
+## 18. Phase 30 — `XyetherLineFlow_v30` Final Kaggle Training & Audit (`v42`)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowNet(56ch, 8b, PReLU)` resumed directly from `XyetherLineFlow_v29_Final.pth`), trained `5,500` iters (`7,913.6s`) on Kaggle GPU with `Phase30APISRVectorLoss` (`100%` unclipped `APISR(clean LR -> 4x->2x)` primary Teacher + `1.80*l_lap` Harsh_Q62/H.264 Boost + `1.60*l_lowr` Micro-Edge Rescue + `0.40*l_chr` GT Opponent-Chroma Lock + `100% GT ColorLuvLoss(0.20)` + `0.85*l_cel` + `LPIPS(0.45)` + `PatchVectorDiscriminator(0.08)` + `30% Clean / 70% Degraded YUV_I420` + `ModelEMA(0.9992)`).
+- **Archived Production Artifacts ([`checkpoints/Phase30_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase30_XyetherLineFlow_v1/)) & HuggingFace (`Thanawanit/Kaggle-Backup/checkpoints/Phase30_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v30_Final.pth` (`3.98 MB`, `params_ema`)
+  - `XyetherLineFlow_v30_Final.onnx` (`1.98 MB` — FP32 parity `max_abs_diff = 8.94e-07`)
+  - `XyetherLineFlow_v30_Final_FP16.onnx` (`1.01 MB` — FP16 parity `max_abs_diff = 1.41e-03`)
+  - `phase30_metrics_report.json` (`41.7 KB`)
+- **`XyetherEvaluator` Final:** `line_depth = 0.0` (100% preserved across `1500/3000/4500/Final`), `overshoot_halo = 13.0666` (down from `v29 = 13.2328`), `noise_residual_std = 17.09` (down from `v29 = 17.15`).
+- **Kaggle 4-Regime Benchmark (`test_anime.png` — `Phase30_LineFlow_v1` vs `Phase29_LineFlow_v1` vs `Strong_v3` vs `APISR_4x_to_2x`):**
+
+| Regime | Model | `HL1 / HL2` $\downarrow$ | `LapVar` $\uparrow$ | `MicroLap` $\uparrow$ | `MAE_AP` $\downarrow$ | `Halo` | `Checker` $\downarrow$ | `PSNR` $\uparrow$ | `SSIM` $\uparrow$ |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Clean_LR`** | **`LineFlow_v30`** | **11 / 23** | **1016.7** | 2.96 | 3.83 | +10 | **0.13** | **28.17** | **0.9575** |
+| **`Clean_LR`** | `LineFlow_v29` | 16 / 23 | 1016.6 | 3.06 | 3.81 | +11 | 0.14 | 27.85 | 0.9555 |
+| **`Clean_LR`** | `Strong_v3` | 9 / 34 | 1058.3 | 4.91 | 5.00 | +18 | 0.32 | 28.19 | 0.9506 |
+| **`Clean_LR`** | `APISR_4x_to_2x` | 19 / 18 | 969.3 | 3.08 | 0.00 | +2 | 0.17 | 27.09 | 0.9371 |
+| **`RealBlurry_LR`** | **`LineFlow_v30`** | 16 / **24** | 947.8 | 2.97 | 4.16 | **+6** | **0.16** | **26.89** | **0.9447** |
+| **`RealBlurry_LR`** | `LineFlow_v29` | 16 / 26 | 978.2 | 3.02 | 4.12 | +6 | 0.16 | 26.66 | 0.9435 |
+| **`RealBlurry_LR`** | `Strong_v3` | 9 / 37 | 1017.9 | 5.28 | 4.67 | +22 | 0.35 | 27.40 | 0.9349 |
+| **`RealBlurry_LR`** | `APISR_4x_to_2x` | 28 / 23 | 958.3 | 3.70 | 0.00 | +8 | 0.18 | 27.36 | 0.9395 |
+| **`Harsh_Q62_LR`** | **`LineFlow_v30`** | 34 / 44 | 772.8 | 2.96 | 5.13 | +15 | 0.17 | **25.76** | **0.9338** |
+| **`Harsh_Q62_LR`** | `LineFlow_v29` | 33 / 43 | 796.1 | 3.00 | 5.07 | +16 | 0.16 | 25.63 | 0.9334 |
+| **`Harsh_Q62_LR`** | `Strong_v3` | 40 / 31 | 981.3 | 5.87 | 5.73 | +30 | 0.36 | 25.71 | 0.9115 |
+| **`Harsh_Q62_LR`** | `APISR_4x_to_2x` | 14 / 50 | 895.7 | 4.02 | 0.00 | +10 | 0.18 | 26.21 | 0.9222 |
+| **`Shuffled_Reencode`** | **`LineFlow_v30`** | 37 / 48 | 820.9 | 2.72 | 4.88 | **+8** | 0.15 | **26.43** | **0.9340** |
+| **`Shuffled_Reencode`** | `LineFlow_v29` | 35 / 46 | 850.4 | 2.76 | 4.81 | +9 | 0.14 | 26.28 | 0.9333 |
+| **`Shuffled_Reencode`** | `Strong_v3` | 22 / 34 | 1004.0 | 5.39 | 5.33 | +28 | 0.37 | 26.64 | 0.9188 |
+| **`Shuffled_Reencode`** | `APISR_4x_to_2x` | 25 / 82 | 936.5 | 3.94 | 0.00 | +8 | 0.17 | 26.42 | 0.9199 |
+
+- **Key Improvements over `v29`:** Improves `PSNR` (`+0.13 to +0.32 dB`), `SSIM`, and `Halo` (`-1` across Clean/Harsh/Shuffled) on all 4 regimes simultaneously, deepens `Clean_LR HL1` (`16 -> 11`, beating `APISR = 19`) and `RealBlurry HL2` (`26 -> 24`), cuts `Clean_LR Checker` (`0.14 -> 0.13`, 2.5x cleaner than `Strong_v3 = 0.32`), and keeps `Clean_LR LapVar = 1016.7` (beating `APISR = 969.3`) at `1.01 MB` FP16 ONNX.
+
 
 
 
