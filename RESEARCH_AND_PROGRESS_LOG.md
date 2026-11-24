@@ -1075,6 +1075,20 @@ User locked **`Path1_LF8B`** (`XyetherLineFlowNet 56ch 8b`, init from `XyetherLi
 
 - **Clean Sweep & Visual Proof ([`p30_final_2025plus_visual.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p30_final_2025plus_visual.jpg)):** `LineFlow_v30` strictly beats `LineFlow_v29` on **8/8** suite-regimes across `PSNR`, `SSIM`, `LPIPS`, `Halo`, `Chr` (`-0.37 to -0.53`), and `Chk`, while beating `APISR_2x` on `PSNR` (8/8), `SSIM` (8/8), `LPIPS` (7/8, tied 1/8), `Halo` (8/8, `-3.6 to -7.6`), `Chr` (6/8), and `Chk` (8/8), at `1.01 MB` FP16 ONNX (`11.2x` faster than `APISR_4x`) with `LapVar` matching `APISR_2x` (`1608.0 vs 1616.3` clean, `1513.6 vs 1510.4` curvejit).
 
+### 18.2 User Visual Audit & Root-Cause Diagnostic (`Gachiakuta` Cel Smoothness/Line Wobble & `ChainsawMan` Ink-Smear)
+User visual inspection of `p30_final_2025plus_visual.jpg` identified 3 exact remaining visual gaps vs `APISR_2x`, verified at 3x zoom ([`p30_diag_gach_csm_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p30_diag_gach_csm_zoom.jpg)) and tested in a 550-step Colab T4 ablation (`P31_Silky_Test`, [`p31_silky_antismear_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p31_silky_antismear_zoom.jpg)):
+1. **`Gachiakuta` Cel Blending Gap (`Flat_TV1` / `Grad_TV1` / `Mottle8`):**
+   - `APISR_2x`: `Flat_TV1 = 0.542 | Grad_TV1 = 2.487 | Mottle4 = 4.210 | Mottle8 = 7.685`
+   - `LineFlow_v30`: `Flat_TV1 = 0.608 | Grad_TV1 = 2.843 | Mottle4 = 4.378 | Mottle8 = 8.023 | Edge_MAE_AP = 9.19`
+   - `P31_Silky_Test` (`550 steps`, wide `span_ap < 0.085` multi-scale cel loss + `3.6*l_antismear` + `1.80*l_hess`): **`Flat_TV1 = 0.569` (`-6.4%`, closing 60% of gap to APISR!)**, `Grad_TV1 = 2.816`, **`Edge_MAE_AP = 8.72` (`-5.1%`)**, `Chk = 0.977` (vs `v30 = 1.055`), `noise_std = 16.36` (vs `17.09`), `h264 PSNR = 26.89` (`+0.17 dB`), `line_depth = 0.00`.
+2. **Root Causes Proven:**
+   - **Cel Grain/Mottling:** `flat_mask = (span_ap < 0.018)` turned off `l_cel` inside `Gachiakuta`'s coat & background (`span 0.015..0.075`), while `GT` chroma/Luv supervision preserved `GT`'s own broadcast grain (`GT Flat_TV1 = 1.032, Grad_TV1 = 3.913`).
+   - **`ChainsawMan` Top-Right Ink Smear ("ปัดน้ำหมึก"):** One-sided `2.8*l_ink` (`F.relu(py - ay)`) had no symmetric bright-shoulder floor (`F.relu(ay - py)`), letting `1x9`/`9x1` strip filters leak dark ink 1px onto bright shoulders.
+   - **Curved Black Line Wobble ("เส้นเบี้ยว") & Dark-on-Dark Seam Breakage:** `Nearest(x)` 2x skip + weak `ink_w` on dark-on-dark seams (`Gachiakuta` red-vest zipper) vs `APISR`'s `4x->2x` SSAA subpixel anti-aliasing. Adding `1.80*l_hess` (2nd-order curvature) + `valley_ap` ink weighting cut `Edge_MAE_AP` from `9.19 -> 8.72` in 550 steps.
+3. **Controlled Head-to-Head (`P31_Silky_2x` Nearest vs `P31_SSAA_4x2x` Bilinear + `PixelShuffle(4)->AvgPool(2)`, exact same 550 steps from `v30`):**
+   - `P31_SSAA_4x2x` (`532K` params; T4 FP16 `235.9 ms @540p / 940.2 ms @1080p`): `Gach Flat_TV1 = 0.643` (WORSE than `P31_Silky_2x = 0.569` and `v30 = 0.608`!), `Grad_TV1 = 2.900` (vs `2.816`), `17s h264 Chk = 1.075` (vs `0.977`), `17s clean Chk = 1.365` (vs `1.271`), `Synth halo = 18.07` (vs `14.29`), `Edge_MAE_AP = 8.74` (vs `8.72`).
+   - **Proven Conclusion ([`p31_ssaa_vs_nearest_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p31_ssaa_vs_nearest_zoom.jpg)):** Swapping `Nearest(x)` to `Bilinear + 4x->2x SSAA` on top of a `v30`-pretrained backbone **worsened** cel smoothness (`Flat_TV1 0.569 -> 0.643`), `Chk` (`0.977 -> 1.075`), and synthetic halo (`14.29 -> 18.07`) because `v30`'s 8 blocks were co-adapted to `Nearest(x)` residual coordinates. **`P31_Silky_2x` (Standard `LineFlow 8B` + `Phase31SilkyVectorLoss`) is the clear winner!**
+
 
 
 

@@ -2218,6 +2218,122 @@ class Phase30APISRVectorLoss(Phase29VectorCleanLoss):
         }
 
 
+class Phase31SilkyVectorLoss(Phase29VectorCleanLoss):
+    """
+    Phase 31 Silky-Cel + Anti-Smear + Line-Geometry Loss (Colab T4 P31_Silky_2x winner):
+    1. Wide Soft-Gated Multi-Scale Cel Smoothness (1px, 2px, 4px, 8px) up to span_ap < 0.085
+       anchored strictly to APISR(clean) -> closes Gachiakuta coat/background cel gap cleanly.
+    2. Bright-Shoulder Anti-Smear Floor (`3.6 * l_antismear`) -> forbids 1x9/9x1 strip filters
+       from dragging dark ink onto bright shoulders (eliminates ChainsawMan ink-smear streak).
+    3. Hessian 2nd-Order Curvature (`1.80 * l_hess`) + Dark-on-Dark Valley Weighting (`valley_ap`)
+       -> straight, unbroken black lines & dark-on-dark seams without wobble.
+    """
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        pred = pred.float()
+        tar_b = tar_b.float()
+        near_b = F.interpolate(lr_b.float(), scale_factor=2, mode="nearest")
+        luma_w = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+
+        py = (pred * luma_w).sum(dim=1, keepdim=True)
+        ay = (tar_b * luma_w).sum(dim=1, keepdim=True)
+        ny = (near_b * luma_w).sum(dim=1, keepdim=True)
+
+        with torch.no_grad():
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            max3_ay = F.max_pool2d(ay, 3, 1, 1)
+            min3_ay = -F.max_pool2d(-ay, 3, 1, 1)
+            span_ap = max3_ay - min3_ay
+            mean3_ay = F.avg_pool2d(ay, 3, 1, 1)
+
+            is_edge = ((span_ap - 0.045) / 0.065).clamp(0.0, 1.0)
+            cel_soft = ((0.085 - span_ap) / 0.055).clamp(0.0, 1.0)
+            w_edge = 0.55 + 2.75 * is_edge * (1.0 + 0.50 * is_deg)
+
+            valley_ap = F.relu(max3_ay - ay)
+            ink_w = ((F.relu(ny - ay) + 0.65 * F.relu(valley_ap - 0.040)) / 0.038).clamp(0.0, 2.0)
+            bright_shoulder = ((span_ap >= 0.040) & (ay > mean3_ay + 0.004)).float()
+
+            max3_ap = F.max_pool2d(tar_b, 3, 1, 1) + 0.002
+            min3_ap = -F.max_pool2d(-tar_b, 3, 1, 1) - 0.003
+
+        l_pix = 1.40 * torch.sqrt((pred - tar_b) ** 2 + 1e-6).mean() + 1.00 * (py - ay).abs().mean()
+        l_ink = (ink_w * F.relu(py - ay)).mean()
+        l_antismear = (
+            (bright_shoulder * F.relu(ay - py)).mean()
+            + 0.55 * (bright_shoulder * F.relu(tar_b - pred)).mean()
+        )
+        l_grad = self._multiscale_directional_and_diag_grad(pred, tar_b, w_edge)
+        lap_p = F.conv2d(py, lap_k, padding=1)
+        lap_a = F.conv2d(ay, lap_k, padding=1)
+        l_lap = (w_edge * (lap_p.abs() - lap_a.abs()).abs()).mean() + 0.70 * (w_edge * (lap_p - lap_a).abs()).mean()
+
+        d2x_p = py[:, :, :, 2:] - 2.0 * py[:, :, :, 1:-1] + py[:, :, :, :-2]
+        d2x_a = ay[:, :, :, 2:] - 2.0 * ay[:, :, :, 1:-1] + ay[:, :, :, :-2]
+        d2y_p = py[:, :, 2:, :] - 2.0 * py[:, :, 1:-1, :] + py[:, :, :-2, :]
+        d2y_a = ay[:, :, 2:, :] - 2.0 * ay[:, :, 1:-1, :] + ay[:, :, :-2, :]
+        d2xy_p = py[:, :, 1:, 1:] - py[:, :, 1:, :-1] - py[:, :, :-1, 1:] + py[:, :, :-1, :-1]
+        d2xy_a = ay[:, :, 1:, 1:] - ay[:, :, 1:, :-1] - ay[:, :, :-1, 1:] + ay[:, :, :-1, :-1]
+        l_hess = (
+            (is_edge[:, :, :, 1:-1] * (d2x_p - d2x_a).abs()).mean()
+            + (is_edge[:, :, 1:-1, :] * (d2y_p - d2y_a).abs()).mean()
+            + (is_edge[:, :, :-1, :-1] * (d2xy_p - d2xy_a).abs()).mean()
+        )
+        l_curve = self._angle_only_curve_smoothness(pred, tar_b, luma_w)
+
+        l_cel_pix = (cel_soft * (pred - tar_b).abs()).mean()
+        l_cel_ms = pred.new_tensor(0.0)
+        for s, w_s in [(1, 1.0), (2, 0.8), (4, 0.7), (8, 0.6)]:
+            m_h = cel_soft[:, :, :, :-s] * cel_soft[:, :, :, s:]
+            m_v = cel_soft[:, :, :-s, :] * cel_soft[:, :, s:, :]
+            dx_p = (pred[:, :, :, s:] - pred[:, :, :, :-s]).abs()
+            dx_a = (tar_b[:, :, :, s:] - tar_b[:, :, :, :-s]).abs()
+            dy_p = (pred[:, :, s:, :] - pred[:, :, :-s, :]).abs()
+            dy_a = (tar_b[:, :, s:, :] - tar_b[:, :, :-s, :]).abs()
+            l_cel_ms = l_cel_ms + w_s * (
+                (m_h * (F.relu(dx_p - dx_a) + 0.35 * (dx_p - dx_a).abs())).mean()
+                + (m_v * (F.relu(dy_p - dy_a) + 0.35 * (dy_p - dy_a).abs())).mean()
+            )
+        l_cel = l_cel_pix + 0.85 * l_cel_ms
+        l_halo = F.relu(pred - max3_ap).mean() + 0.45 * F.relu(min3_ap - pred).mean()
+
+        total = (
+            l_pix
+            + 2.4 * l_ink
+            + 3.6 * l_antismear
+            + 2.6 * l_grad
+            + 1.50 * l_lap
+            + 1.80 * l_hess
+            + 2.2 * l_curve
+            + 2.40 * l_cel
+            + 2.4 * l_halo
+        )
+        return total, {
+            "l_pix": l_pix.item(),
+            "l_ink": l_ink.item(),
+            "l_smear": l_antismear.item(),
+            "l_lap": l_lap.item(),
+            "l_hess": l_hess.item(),
+            "l_cel": l_cel.item(),
+            "l_halo": l_halo.item(),
+        }
+
+
 
 
 

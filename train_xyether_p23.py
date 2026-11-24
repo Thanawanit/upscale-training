@@ -34,6 +34,7 @@ from losses.xyether_losses import (
     Phase28DegradGatedSWTLoss,
     Phase29VectorCleanLoss,
     Phase30APISRVectorLoss,
+    Phase31SilkyVectorLoss,
     VGGPerceptualLoss,
 )
 
@@ -201,6 +202,7 @@ def train_p23(args) -> None:
     is_p28 = args.loss_version >= 28
     is_p29 = args.loss_version >= 29
     is_p30 = args.loss_version >= 30
+    is_p31 = args.loss_version >= 31
     print(f"Phase {args.loss_version} Training | arch={args.arch} | device={device} | scratch_init={not resuming}")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -216,7 +218,7 @@ def train_p23(args) -> None:
         patch_size=args.patch_size,
         repeat=40,
         return_regime=is_p28,
-        clean_prob=(0.30 if is_p30 else 0.20),
+        clean_prob=(0.25 if is_p31 else (0.30 if is_p30 else 0.20)),
     )
     dataloader = DataLoader(
         dataset,
@@ -278,7 +280,9 @@ def train_p23(args) -> None:
         freq_micro_rescue=(args.loss_version == 27 or args.loss_version == 28),
         unclipped=is_p29,
     ).to(device)
-    if args.loss_version >= 30:
+    if args.loss_version >= 31:
+        criterion = Phase31SilkyVectorLoss().to(device)
+    elif args.loss_version >= 30:
         criterion = Phase30APISRVectorLoss().to(device)
     elif args.loss_version >= 29:
         criterion = Phase29VectorCleanLoss().to(device)
@@ -387,7 +391,9 @@ def train_p23(args) -> None:
             loss = loss_main
             pred_f = pred.float()
             if luv_loss is not None:
-                if is_p30:
+                if is_p31:
+                    luv_ref = (0.90 * tar_b + 0.10 * gt_b).float()
+                elif is_p30:
                     luv_ref = gt_b.float()
                 elif is_p29:
                     luv_ref = (0.70 * tar_b + 0.30 * gt_b).float()
