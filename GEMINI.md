@@ -10,3 +10,7 @@
 ## 3. Project-Specific Invariants
 - **100% Own Student Checkpoint Lineage:** Student models must always be initialized strictly from our own checkpoints (e.g., `XyetherKiller_OwnTwinRefl_Init_v21.pth`, `XyetherKiller_APISRMaster_v21_Final.pth`). External models (`APISR.onnx`) may only be used as Teachers inside the loss function (`Option B`).
 - **Scratch & Temp Redirection:** Always set `$env:TEMP="d:\MODEL UPSCALE ME\scratch"; $env:TMP="d:\MODEL UPSCALE ME\scratch"; $env:TORCH_HOME="d:\MODEL UPSCALE ME\scratch\torch_cache"` so Drive `C:` remains clean.
+
+## 4. Exhaustive Hypothesis Testing Iron Rule (No Asking Before Testing)
+- Whenever a visual artifact, metric gap, or unexpected behavior is reported, **immediately execute all diagnostic, ablation, and litmus tests on local/Colab T4 until the root cause is 100% scientifically proven** (data vs. codec vs. loss vs. architecture), including visual heatmap/zoom verification.
+- Do **not** pause to ask for permission before running diagnostic/PoC experiments. Only ask before full production Kaggle training or major architectural/repo decisions once the evidence is complete.

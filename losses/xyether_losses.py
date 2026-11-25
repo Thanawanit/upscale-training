@@ -2398,6 +2398,147 @@ class Phase32EdgeBandLoss(Phase31SilkyVectorLoss):
         return total, logs
 
 
+class Phase33MacroblockDebleedLoss(Phase32EdgeBandLoss):
+    """
+    Phase 33 Joint Luma+Chroma Near-Edge De-Bleed + Multi-Scale Macroblock Chroma Loss:
+    1. Joint Luma + Opponent-Chroma edge_core (`span_j >= 0.125`) capturing dark-red-to-black borders.
+    2. Strong Near-Edge Band Opponent-Chroma De-Bleed (`chr_eb_w * l_eb_chr`) + 1px Chroma-Gradient Sharpening.
+    3. Multi-Scale (1/2/4/8px) Cel-Chroma Denoising + Global Opponent-Chroma Pixel Anchor.
+    4. Macroblock-Scale (`8x8` & `16x16` HR AvgPool + `12px`/`16px` cross-block step) to erase
+       8x8 LR (=16x16 HR) H.264 4:2:0 chroma macroblock DC shifts.
+    """
+
+    def __init__(
+        self,
+        mb_w: float = 5.0,
+        edgeband_w: float = 3.2,
+        chr_eb_w: float = 3.5,
+        cgrad_w: float = 2.4,
+        cel_chr_w: float = 2.2,
+        pix_chr_w: float = 3.0,
+    ):
+        super().__init__(edgeband_w=edgeband_w)
+        self.mb_w = float(mb_w)
+        self.chr_eb_w = float(chr_eb_w)
+        self.cgrad_w = float(cgrad_w)
+        self.cel_chr_w = float(cel_chr_w)
+        self.pix_chr_w = float(pix_chr_w)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        total, logs = super(Phase32EdgeBandLoss, self).forward(
+            pred,
+            tar_b,
+            gt_b,
+            lr_b,
+            edge_zone=edge_zone,
+            regime=regime,
+            warmstart_out=warmstart_out,
+            warmstart_weight=warmstart_weight,
+        )
+        pf = pred.float()
+        af = tar_b.float()
+        luma_w = self.luma_w.to(pred.device)
+        py = (pf * luma_w).sum(dim=1, keepdim=True)
+        ay = (af * luma_w).sum(dim=1, keepdim=True)
+        prg, arg = pf[:, 0:1] - pf[:, 1:2], af[:, 0:1] - af[:, 1:2]
+        pbg, abg = pf[:, 2:3] - pf[:, 1:2], af[:, 2:3] - af[:, 1:2]
+
+        with torch.no_grad():
+            span_y = F.max_pool2d(ay, 3, 1, 1) - (-F.max_pool2d(-ay, 3, 1, 1))
+            span_rg = F.max_pool2d(arg, 3, 1, 1) - (-F.max_pool2d(-arg, 3, 1, 1))
+            span_bg = F.max_pool2d(abg, 3, 1, 1) - (-F.max_pool2d(-abg, 3, 1, 1))
+            span_chr = torch.maximum(span_rg, span_bg)
+            span_j = torch.maximum(span_y, 0.85 * span_chr)
+
+            edge_core = (span_j >= 0.125).float()
+            near_band = (F.max_pool2d(edge_core, 7, 1, 3) - edge_core).clamp(0.0, 1.0)
+            edge_plus_band = (edge_core + near_band).clamp(0.0, 1.0)
+            cel_soft = ((0.085 - span_j) / 0.055).clamp(0.0, 1.0)
+
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            w_deg = 0.50 + 1.50 * is_deg
+            w_band = near_band * w_deg
+            w_cgrad = edge_plus_band * w_deg
+
+        l_eb_y = (w_band * (py - ay).abs()).mean()
+        l_eb_chr = (w_band * ((prg - arg).abs() + (pbg - abg).abs())).mean()
+        l_eb = l_eb_y + self.chr_eb_w * l_eb_chr
+
+        def _cgrad_l1(pc: torch.Tensor, ac: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+            dx = (w[:, :, :, 1:] * ((pc[:, :, :, 1:] - pc[:, :, :, :-1]) - (ac[:, :, :, 1:] - ac[:, :, :, :-1])).abs()).mean()
+            dy = (w[:, :, 1:, :] * ((pc[:, :, 1:, :] - pc[:, :, :-1, :]) - (ac[:, :, 1:, :] - ac[:, :, :-1, :])).abs()).mean()
+            d1 = (w[:, :, 1:, 1:] * ((pc[:, :, 1:, 1:] - pc[:, :, :-1, :-1]) - (ac[:, :, 1:, 1:] - ac[:, :, :-1, :-1])).abs()).mean()
+            d2 = (w[:, :, 1:, :-1] * ((pc[:, :, 1:, :-1] - pc[:, :, :-1, 1:]) - (ac[:, :, 1:, :-1] - ac[:, :, :-1, 1:])).abs()).mean()
+            return dx + dy + 0.65 * (d1 + d2)
+
+        l_eb_cgrad = _cgrad_l1(prg, arg, w_cgrad) + _cgrad_l1(pbg, abg, w_cgrad)
+
+        l_cel_chr = pf.new_tensor(0.0)
+        for s, ws in [(1, 1.0), (2, 0.8), (4, 0.7), (8, 0.6)]:
+            mh = cel_soft[:, :, :, :-s] * cel_soft[:, :, :, s:]
+            mv = cel_soft[:, :, :-s, :] * cel_soft[:, :, s:, :]
+            for pc, ac in [(prg, arg), (pbg, abg)]:
+                dxp = (pc[:, :, :, s:] - pc[:, :, :, :-s]).abs()
+                dxa = (ac[:, :, :, s:] - ac[:, :, :, :-s]).abs()
+                dyp = (pc[:, :, s:, :] - pc[:, :, :-s, :]).abs()
+                dya = (ac[:, :, s:, :] - ac[:, :, :-s, :]).abs()
+                l_cel_chr = l_cel_chr + ws * (
+                    (mh * (F.relu(dxp - dxa) + 0.35 * (dxp - dxa).abs())).mean()
+                    + (mv * (F.relu(dyp - dya) + 0.35 * (dyp - dya).abs())).mean()
+                )
+
+        l_pix_chr = ((0.65 + 0.70 * is_deg) * ((prg - arg).abs() + (pbg - abg).abs())).mean()
+
+        l_mb_pool = (
+            (w_deg * (F.avg_pool2d(prg, 8, 8) - F.avg_pool2d(arg, 8, 8)).abs()).mean()
+            + (w_deg * (F.avg_pool2d(pbg, 8, 8) - F.avg_pool2d(abg, 8, 8)).abs()).mean()
+            + 1.4 * (w_deg * (F.avg_pool2d(prg, 16, 16) - F.avg_pool2d(arg, 16, 16)).abs()).mean()
+            + 1.4 * (w_deg * (F.avg_pool2d(pbg, 16, 16) - F.avg_pool2d(abg, 16, 16)).abs()).mean()
+        )
+        l_mb_step = pf.new_tensor(0.0)
+        for s, ws in [(12, 1.0), (16, 1.2)]:
+            mh = cel_soft[:, :, :, :-s] * cel_soft[:, :, :, s:] * w_deg
+            mv = cel_soft[:, :, :-s, :] * cel_soft[:, :, s:, :] * w_deg
+            for pc, ac in [(prg, arg), (pbg, abg)]:
+                dxp = (pc[:, :, :, s:] - pc[:, :, :, :-s]).abs()
+                dxa = (ac[:, :, :, s:] - ac[:, :, :, :-s]).abs()
+                dyp = (pc[:, :, s:, :] - pc[:, :, :-s, :]).abs()
+                dya = (ac[:, :, s:, :] - ac[:, :, :-s, :]).abs()
+                l_mb_step = l_mb_step + ws * (
+                    (mh * (F.relu(dxp - dxa) + 0.40 * (dxp - dxa).abs())).mean()
+                    + (mv * (F.relu(dyp - dya) + 0.40 * (dyp - dya).abs())).mean()
+                )
+        l_mb = l_mb_pool + 0.70 * l_mb_step
+
+        total = (
+            total
+            + self.edgeband_w * l_eb
+            + self.cgrad_w * l_eb_cgrad
+            + self.cel_chr_w * l_cel_chr
+            + self.pix_chr_w * l_pix_chr
+            + self.mb_w * l_mb
+        )
+        logs["l_eb"] = l_eb.item()
+        logs["l_cgrad"] = l_eb_cgrad.item()
+        logs["l_mb"] = l_mb.item()
+        return total, logs
+
+
+
 
 
 

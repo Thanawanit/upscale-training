@@ -17,7 +17,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from archs.xyether_lineflow import XyetherLineFlowNet
+from archs.xyether_lineflow import XyetherLineFlowChrDeblockNet, XyetherLineFlowNet
 from archs.xyether_rephybrid import XyetherRepHybridNet
 from benchmark.xyether_evaluator import XyetherEvaluator
 from dataset.otf_dataset import AnimeOTFDataset
@@ -36,6 +36,7 @@ from losses.xyether_losses import (
     Phase30APISRVectorLoss,
     Phase31SilkyVectorLoss,
     Phase32EdgeBandLoss,
+    Phase33MacroblockDebleedLoss,
     VGGPerceptualLoss,
 )
 
@@ -101,8 +102,8 @@ def export_onnx(ema_model: nn.Module, onnx_path: str) -> str:
         "input_names": ["input"],
         "output_names": ["output"],
         "dynamic_axes": {
-            "input": {0: "batch", 2: "height", 3: "width"},
-            "output": {0: "batch", 2: "height", 3: "width"},
+            "input": {0: "batch", 2: "height_in", 3: "width_in"},
+            "output": {0: "batch", 2: "height_out", 3: "width_out"},
         },
     }
     try:
@@ -153,7 +154,12 @@ def upload_hf_artifacts(paths, hf_token: str, hf_repo: str, subdir: str) -> None
 def save_checkpoint(model, ema, args, step: int, tag: str) -> str:
     os.makedirs(args.output_dir, exist_ok=True)
     pth_path = os.path.join(args.output_dir, f"{args.model_prefix}_{tag}.pth")
-    arch_name = "XyetherRepHybridNet" if args.arch == "rephybrid" else "XyetherLineFlowNet"
+    if args.arch == "rephybrid":
+        arch_name = "XyetherRepHybridNet"
+    elif args.arch == "lineflow_chrdeblock":
+        arch_name = "XyetherLineFlowChrDeblockNet"
+    else:
+        arch_name = "XyetherLineFlowNet"
     torch.save(
         {
             "params": model.state_dict(),
@@ -205,6 +211,7 @@ def train_p23(args) -> None:
     is_p30 = args.loss_version >= 30
     is_p31 = args.loss_version >= 31
     is_p32 = args.loss_version >= 32
+    is_p33 = args.loss_version >= 33
     print(f"Phase {args.loss_version} Training | arch={args.arch} | device={device} | scratch_init={not resuming}")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -220,11 +227,12 @@ def train_p23(args) -> None:
         patch_size=args.patch_size,
         repeat=40,
         return_regime=is_p28,
-        clean_prob=(0.25 if is_p31 else (0.30 if is_p30 else 0.20)),
+        clean_prob=(0.22 if is_p33 else (0.25 if is_p31 else (0.30 if is_p30 else 0.20))),
         use_h264=is_p32,
+        h264_direct_prob=(0.50 if is_p33 else 0.0),
     )
     if is_p32:
-        print(f"Dataset Real H.264 (PyAV libx264) Active: {dataset.use_h264}")
+        print(f"Dataset Real H.264 (PyAV libx264) Active: {dataset.use_h264} | direct_prob={dataset.h264_direct_prob:.2f}")
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -244,6 +252,14 @@ def train_p23(args) -> None:
             num_blocks=args.num_blocks,
             upscale=2,
         ).to(device)
+    elif args.arch == "lineflow_chrdeblock":
+        model = XyetherLineFlowChrDeblockNet(
+            num_in_ch=3,
+            num_out_ch=3,
+            num_feat=args.num_feat,
+            num_blocks=args.num_blocks,
+            upscale=2,
+        ).to(device)
     else:
         model = XyetherLineFlowNet(
             num_in_ch=3,
@@ -253,11 +269,21 @@ def train_p23(args) -> None:
             upscale=2,
         ).to(device)
 
+    new_head_keys = set()
     if args.resume_path and os.path.exists(args.resume_path):
         ckpt = torch.load(args.resume_path, map_location=device)
         sd = ckpt.get("params_ema", ckpt.get("params", ckpt))
-        model.load_state_dict({k.replace("module.", ""): v.float() for k, v in sd.items()}, strict=True)
-        print(f"Resumed own student checkpoint (EMA weights): {args.resume_path}")
+        clean_sd = {k.replace("module.", ""): v.float() for k, v in sd.items()}
+        if args.arch == "lineflow_chrdeblock":
+            missing, unexpected = model.load_state_dict(clean_sd, strict=False)
+            new_head_keys = set(missing)
+            print(
+                f"Resumed own LineFlow backbone into ChrDeblockNet: {args.resume_path} "
+                f"(new head tensors={len(missing)}, unexpected={len(unexpected)})"
+            )
+        else:
+            model.load_state_dict(clean_sd, strict=True)
+            print(f"Resumed own student checkpoint (EMA weights): {args.resume_path}")
 
     warmstart_model = None
     if args.warmstart_ckpt and os.path.exists(args.warmstart_ckpt):
@@ -285,7 +311,9 @@ def train_p23(args) -> None:
         freq_micro_rescue=(args.loss_version == 27 or args.loss_version == 28),
         unclipped=is_p29,
     ).to(device)
-    if args.loss_version >= 32:
+    if args.loss_version >= 33:
+        criterion = Phase33MacroblockDebleedLoss().to(device)
+    elif args.loss_version >= 32:
         criterion = Phase32EdgeBandLoss(edgeband_w=2.8).to(device)
     elif args.loss_version >= 31:
         criterion = Phase31SilkyVectorLoss().to(device)
@@ -314,7 +342,19 @@ def train_p23(args) -> None:
     )
     disc = PatchVectorDiscriminator(nf=48).to(device) if (is_p29 and args.gan_weight > 0.0) else None
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr_g, weight_decay=1e-4)
+    if new_head_keys:
+        base_params = [p for n, p in model.named_parameters() if n not in new_head_keys]
+        head_params = [p for n, p in model.named_parameters() if n in new_head_keys]
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": base_params, "lr": args.lr_g},
+                {"params": head_params, "lr": args.lr_g * 5.0},
+            ],
+            weight_decay=1e-4,
+        )
+        print(f"Differential LR active: backbone={args.lr_g:.2e} | new_chr_head={args.lr_g * 5.0:.2e}")
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr_g, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, build_lr_lambda(args.warmup_iters, args.total_iters, args.lr_g, min_lr=args.min_lr)
     )
@@ -398,7 +438,9 @@ def train_p23(args) -> None:
             loss = loss_main
             pred_f = pred.float()
             if luv_loss is not None:
-                if is_p31:
+                if is_p33:
+                    luv_ref = tar_b.float()
+                elif is_p31:
                     luv_ref = (0.90 * tar_b + 0.10 * gt_b).float()
                 elif is_p30:
                     luv_ref = gt_b.float()
@@ -470,7 +512,7 @@ def train_p23(args) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Phase 23-29 Xyether AnimeSR")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K")
-    parser.add_argument("--arch", type=str, default="lineflow", choices=["lineflow", "rephybrid"])
+    parser.add_argument("--arch", type=str, default="lineflow", choices=["lineflow", "lineflow_chrdeblock", "rephybrid"])
     parser.add_argument("--resume_path", type=str, default="")
     parser.add_argument("--resume_url", type=str, default="")
     parser.add_argument("--warmstart_ckpt", type=str, default="")
