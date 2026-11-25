@@ -1212,6 +1212,27 @@ Evaluated 3 properly-initialized (`Kaiming + learnable alpha=0.05`) own-lineage 
    - **`Gach_Coat` H264:** `FLAT RG` vs `APISR(clean)` dropped `1.81 (v32) -> 1.72 (M1) ->` **`1.63`** (`-10.0%` in just 500 steps!), and vs `TRUE GT` `NB_RGB=8.43 / RG=5.26 / FLAT RG=2.15` (beating `v32=8.86/5.63/2.32` & `APISR_2x NB_RGB=8.90/RG=5.95`!).
    - **Synthetic Note:** `lapvar=841.0` (`+26.7` sharper than `v32`), `noise=16.05`, `halo=14.59`, `line_depth=0.09` (fixed to exact `0.00` for production by gating `delta_c * (Y * 25.0).clamp(0.0, 1.0)` on pure-black ink pixels!).
 
+---
+
+## 21. Phase 33 — `XyetherLineFlow_v33` Final Kaggle Training & Audit (`v45`, `XyetherLineFlowChrDeblockNet`)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowChrDeblockNet(56ch, 8b)` = `LineFlow_v32` backbone + 4-Scale `1/2..1/16` HR 2D Opponent-Chroma Deblock Head + pure-black `ink_keep` gate, `654,719` params), trained `5,500` iters on Kaggle GPU (`batch=12`, differential LR `1e-4` backbone / `5e-4` Chroma Head, `Phase33MacroblockDebleedLoss`, `50%` Direct NoBlur H.264 + `veryfast_2f / medium_1f` in-loop deblocking, `100% APISR` Luv `0.25`, `LPIPS 0.45`, `PatchVectorDisc 0.05`, `EMA 0.9992`).
+- **Archived Production Artifacts ([`checkpoints/Phase33_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase33_XyetherLineFlow_v1/)) & HuggingFace (`Thanawanit/Kaggle-Backup/checkpoints/Phase33_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v33_Final.pth` (`5.32 MB`, `params_ema`, learned `chr_alpha = 0.0973`)
+  - `XyetherLineFlow_v33_Final.onnx` (`2.65 MB` — FP32 parity `max_abs_diff = 9.54e-07`)
+  - `XyetherLineFlow_v33_Final_FP16.onnx` (`1.36 MB` — FP16 parity `max_abs_diff = 1.37e-03`, `258.4 ms @540p->1080p` on Colab T4 ORT FP16, `9.1×` faster than `APISR_4x`)
+  - `phase33_metrics_report.json` (`42.7 KB`)
+- **`XyetherEvaluator` Final:** **`line_depth = 0.00`** (locked by `ink_keep`), **`overshoot_halo = 13.1916`** (`-1.67` vs `v32 = 14.87`), **`noise_residual_std = 15.69`** (all-time record lowest across `v29..v33`!), `lapvar = 799.3`.
+- **Massive Breakthrough on `Gach_Coat (004.png)` `R-G` Chroma Smear ([`p33_final_gach_csm_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p33_final_gach_csm_zoom.jpg)):**
+  - **H264 vs `APISR_2x(h264)`:** `NB_RGB = 4.15 (v31) -> 3.98 (v32) ->` **`3.77 (v33)`** | **`RG = 3.13 -> 3.03 -> 2.54 (-16.2%!)`** | **`FLAT RG = 1.46 -> 1.56 -> 1.26 (-19.2%!)`** | `BG = 2.87 -> 2.65 -> 2.39 (-9.8%)`
+  - **H264 vs `APISR_2x(CLEAN Oracle)`:** `NB_RGB = 5.65 -> 5.17 ->` **`5.01`** | **`RG = 3.96 -> 3.86 -> 3.42 (-11.4%!)`** | **`FLAT RG = 1.79 -> 1.81 -> 1.60 (-11.6%!)`**
+  - **CLEAN vs `APISR_2x(CLEAN)`:** **`RG = 2.91 -> 2.72 -> 2.29 (-15.8%!)`** | **`FLAT RG = 1.20 -> 1.22 -> 1.08 (-11.5%!)`**
+- **All-Time Record 4-Regime Benchmark (`test_anime.png`):**
+  - `Clean_LR`: **`HL1 = 9 / HL2 = 26`**, **`LapVar = 1064.6`** (beats `Strong_v3 1058.3` & `APISR 969.3`!), **`MAE_AP = 3.44`** (all-time best!), **`Chk = 0.14`**, **`PSNR = 27.93`**
+  - `RealBlurry_LR`: **`MAE_AP = 3.90`** (all-time best!), **`PSNR = 27.43`** (beats `v32 27.28`, `Strong_v3 27.40`, & `APISR 27.36`!)
+  - `Harsh_Q62_LR`: **`MAE_AP = 4.39`** (`-0.37` vs `v32 4.76`!), **`PSNR = 26.61`** (`+0.44 dB` vs `v32`, beats `APISR 26.21` & `Strong_v3 25.71`!)
+  - `Shuffled_Reencode_LR`: **`MAE_AP = 4.07`** (`-0.27` vs `v32 4.34`!), **`Chk = 0.13`** (all-time best!), **`PSNR = 27.32`** (`+0.27 dB` vs `v32`, beats `APISR 26.42` by `+0.90 dB` & `Strong_v3 26.64`!)
+
+
 
 
 
