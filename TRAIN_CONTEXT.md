@@ -43,13 +43,13 @@ Compact operational state for continuing in a new session. **Do not duplicate hi
 - **Legacy Modules (Pre-Phase 23, reference only):** `train_phase1.py`, `train_phase2.py`, `train_xyether.py`, `archs/xyether_compact.py` (`XyetherCompactNet`, `XyetherBalancedNet`, `SRVGGNetCompact`), `archs/discriminator.py` (`UNetDiscriminatorSN`), `weights/transplant.py`, `cloud_manager.py`.
 
 ### Current Artifacts & Checkpoints (Untracked Binary Folders + HuggingFace)
-- **Active Best Model (`checkpoints/Phase30_XyetherLineFlow_v1/`):**
-  - `XyetherLineFlow_v30_Final.pth` (`4,175,275 B` / `3.98 MB`, `params_ema`)
-  - `XyetherLineFlow_v30_Final.onnx` (`2,077,084 B` / `1.98 MB`, FP32 parity `8.94e-07`)
-  - `XyetherLineFlow_v30_Final_FP16.onnx` (`1,057,372 B` / `1.01 MB`, FP16 parity `1.41e-03`)
-  - `phase30_metrics_report.json` (`42,660 B`)
-  - HF Mirror: `Thanawanit/Kaggle-Backup/checkpoints/Phase30_XyetherLineFlow_v1/` & `evaluations/Phase30_XyetherLineFlow/`
-- **Previous Production Anchor (`checkpoints/Phase29_XyetherLineFlow_v1/`):** `XyetherLineFlow_v29_Final.{pth,onnx,_FP16.onnx}` (`206.1 ms @540p` / `850.7 ms @1080p->4K` on T4 CUDA EP FP16).
+- **Active Best Model (`checkpoints/Phase31_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v31_Final.pth` (`4,175,275 B` / `3.98 MB`, `params_ema`)
+  - `XyetherLineFlow_v31_Final.onnx` (`2,077,084 B` / `1.98 MB`, FP32 parity `1.07e-06`)
+  - `XyetherLineFlow_v31_Final_FP16.onnx` (`1,057,372 B` / `1.01 MB`, FP16 parity `1.52e-03`)
+  - `phase31_metrics_report.json` (`42,666 B`)
+  - HF Mirror: `Thanawanit/Kaggle-Backup/checkpoints/Phase31_XyetherLineFlow_v1/` & `evaluations/Phase31_XyetherLineFlow/`
+- **Previous Production Anchors:** `checkpoints/Phase30_XyetherLineFlow_v1/XyetherLineFlow_v30_Final.{pth,onnx,_FP16.onnx}` & `checkpoints/Phase29_XyetherLineFlow_v1/XyetherLineFlow_v29_Final.{pth,onnx,_FP16.onnx}` (`206.1 ms @540p` / `850.7 ms @1080p->4K` on T4 CUDA EP FP16).
 - **Base Anchor & Teacher:** `checkpoints/Phase27_XyetherLineFlow_v5/XyetherLineFlow_v27_Final.pth`, `reference_models/Model/APISR.onnx` (`6.49 MB`).
 - **Verification Scripts (`scratch/`):** `verify_p29_pipeline.py` (Phase 29 E2E CPU smoke + loss/teacher check), `verify_p28_pipeline.py` (backward compat), `kaggle_logs_p29/` (full Kaggle v41 outputs & `xyether-training-runner.log`).
 

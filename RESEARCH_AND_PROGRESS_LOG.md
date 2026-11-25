@@ -1089,6 +1089,24 @@ User visual inspection of `p30_final_2025plus_visual.jpg` identified 3 exact rem
    - `P31_SSAA_4x2x` (`532K` params; T4 FP16 `235.9 ms @540p / 940.2 ms @1080p`): `Gach Flat_TV1 = 0.643` (WORSE than `P31_Silky_2x = 0.569` and `v30 = 0.608`!), `Grad_TV1 = 2.900` (vs `2.816`), `17s h264 Chk = 1.075` (vs `0.977`), `17s clean Chk = 1.365` (vs `1.271`), `Synth halo = 18.07` (vs `14.29`), `Edge_MAE_AP = 8.74` (vs `8.72`).
    - **Proven Conclusion ([`p31_ssaa_vs_nearest_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p31_ssaa_vs_nearest_zoom.jpg)):** Swapping `Nearest(x)` to `Bilinear + 4x->2x SSAA` on top of a `v30`-pretrained backbone **worsened** cel smoothness (`Flat_TV1 0.569 -> 0.643`), `Chk` (`0.977 -> 1.075`), and synthetic halo (`14.29 -> 18.07`) because `v30`'s 8 blocks were co-adapted to `Nearest(x)` residual coordinates. **`P31_Silky_2x` (Standard `LineFlow 8B` + `Phase31SilkyVectorLoss`) is the clear winner!**
 
+---
+
+## 19. Phase 31 — `XyetherLineFlow_v31` Final Kaggle Training & Audit (`v43`)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowNet(56ch, 8b, PReLU)` resumed directly from `XyetherLineFlow_v30_Final.pth`), trained `5,500` iters (`7,521.3s`) on Kaggle GPU with `Phase31SilkyVectorLoss` (`span_ap < 0.085` 4-scale `1/2/4/8px` cel smoothness + `3.6*l_antismear` bright-shoulder anti-smear + `1.80*l_hess` 2nd-order line curvature + `valley_ap` dark-on-dark seam rescue + `0.90*APISR + 0.10*GT` Luv color + `gan_weight=0.05` + `EMA=0.9992`).
+- **Archived Production Artifacts ([`checkpoints/Phase31_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase31_XyetherLineFlow_v1/)) & HuggingFace (`Thanawanit/Kaggle-Backup/checkpoints/Phase31_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v31_Final.pth` (`3.98 MB`, `params_ema`)
+  - `XyetherLineFlow_v31_Final.onnx` (`1.98 MB` — FP32 parity `max_abs_diff = 1.07e-06`)
+  - `XyetherLineFlow_v31_Final_FP16.onnx` (`1.01 MB` — FP16 parity `max_abs_diff = 1.52e-03`)
+  - `phase31_metrics_report.json` (`41.7 KB`)
+- **`XyetherEvaluator` Final:** `line_depth = 0.0`, **`overshoot_halo = 12.9752`** (lowest of `v29/v30/v31`), **`noise_residual_std = 16.84`** (lowest of `v29/v30/v31`).
+- **All-Time Record Closeness to `APISR_2x` (`MAE_AP` across all 4 regimes on `test_anime.png`):**
+  - `Clean_LR`: **`MAE_AP = 3.58`** (vs `v30 = 3.83`, `v29 = 3.81`) | `LapVar = 1009.1` | `PSNR = 28.09` | `SSIM = 0.9573`
+  - `RealBlurry_LR`: **`MAE_AP = 3.99`** (first `< 4.0`, vs `v30 = 4.16`) | `LapVar = 946.7` | `PSNR = 26.81` | `SSIM = 0.9437`
+  - `Harsh_Q62_LR`: **`MAE_AP = 4.88`** (first `< 5.0`, vs `v30 = 5.13`) | `LapVar = 779.4` (`+6.6` vs `v30`) | `PSNR = 25.72` | `SSIM = 0.9332`
+  - `Shuffled_Reencode_LR`: **`MAE_AP = 4.62`** (vs `v30 = 4.88`) | `LapVar = 825.1` (`+4.2` vs `v30`) | `Chk = 0.14` | `PSNR = 26.36` | `SSIM = 0.9333`
+- **`Gachiakuta` Regional Cel Smoothness & Line Geometry ([`p31_final_gach_csm_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p31_final_gach_csm_zoom.jpg)):**
+  - `LineFlow_v31`: **`Flat_TV1 = 0.582`** (vs `v30 = 0.608`, `v29 = 0.612`), **`Mottle4 = 4.323`** (vs `4.378`), **`Mottle8 = 7.918`** (vs `8.023`), **`Edge_MAE_AP = 9.00`** (vs `9.19`, `v29 = 9.36`).
+
 
 
 
