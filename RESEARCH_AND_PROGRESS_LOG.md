@@ -1133,6 +1133,25 @@ Measured in-memory `PyAV libx264` (`80x80`, `preset=ultrafast`, `yuv420p`) speed
   2. **The remaining ~13% gain** (`4.27 -> 4.22` H.264, `3.06 -> 3.00` Clean, plus best `PSNR/SSIM/Chk/noise_std`) comes from `Arm2_PyAV_EB`'s explicit 2–5px Near-Edge Band Luma+Chroma Debleed loss!
   3. Both arms improved **`17s h264` AND `17s clean` simultaneously** while preserving `line_depth = 0.00`.
 
+---
+
+## 20. Phase 32 — `XyetherLineFlow_v32` Final Kaggle Training & Audit (`v44`, Real `PyAV libx264` + EdgeBand De-Bleed)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowNet(56ch, 8b, PReLU)` resumed directly from `XyetherLineFlow_v31_Final.pth`), trained `5,500` iters (`7,518.1s`) on Kaggle GPU with **Real In-Memory `PyAV 19.0.2` `libx264` (`CRF 20..32 yuv420p`, ~55% of batch)** + `Phase32EdgeBandLoss(edgeband_w=2.8)` + `0.90*APISR + 0.10*GT` Luv + `LPIPS(0.45)` + `PatchVectorDisc(0.05)` + `EMA=0.9992`.
+- **Archived Production Artifacts ([`checkpoints/Phase32_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase32_XyetherLineFlow_v1/)) & HuggingFace (`Thanawanit/Kaggle-Backup/checkpoints/Phase32_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v32_Final.pth` (`3.98 MB`, `params_ema`)
+  - `XyetherLineFlow_v32_Final.onnx` (`1.98 MB` — FP32 parity `max_abs_diff = 9.54e-07`)
+  - `XyetherLineFlow_v32_Final_FP16.onnx` (`1.01 MB` — FP16 parity `max_abs_diff = 1.59e-03`)
+  - `phase32_metrics_report.json` (`41.7 KB`)
+- **`XyetherEvaluator` Final:** `line_depth = 0.0`, **`noise_residual_std = 16.58`** (lowest of `v29/v30/v31/v32`), `overshoot_halo = 14.8653`.
+- **Massive Breakthrough on `Gach_Coat` Near-Edge Band (`2..5px` "ขอบสีเปื้อน", [`p32_final_gach_csm_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p32_final_gach_csm_zoom.jpg)):**
+  - **`H264`:** `CropMAE` dropped `3.73 (v30) -> 3.34 (v31) ->` **`2.94 (v32, -21.2%)`**; **`NearBandMAE`** dropped `5.14 -> 4.61 ->` **`3.99 (-22.4% vs v30, -13.4% vs v31; Y=3.52, BG=2.28)`** — `v32` on **H.264** (`3.99`) is now cleaner than `v30` was on **CLEAN** (`4.19`)!
+  - **`CLEAN`:** `CropMAE` dropped `3.37 -> 2.92 ->` **`2.47 (-26.7%)`**; **`NearBandMAE`** dropped `4.19 -> 3.51 ->` **`2.86 (-31.7% vs v30, -18.5% vs v31; Y=2.46, BG=1.82)`**!
+- **All-Time Record 4-Regime Benchmark (`test_anime.png`):**
+  - `Clean_LR`: **`HL1 = 9`** (matches `Strong_v3`), **`LapVar = 1036.5`**, **`MAE_AP = 3.49`**, **`SSIM = 0.9579`**
+  - `RealBlurry_LR`: **`HL1 = 14`**, **`LapVar = 1010.0`** (`+63` vs `v31`, beats `APISR 958.3`), **`Chk = 0.15`**, **`PSNR = 27.28`** (`+0.47 dB`), **`SSIM = 0.9484`**
+  - `Harsh_Q62_LR`: **`HL1 = 27`** (`-7` deeper vs `v31`), **`LapVar = 814.8`** (`+35` vs `v31`), **`MAE_AP = 4.76`**, **`PSNR = 26.17`** (`+0.45 dB`), **`SSIM = 0.9374`**
+  - `Shuffled_Reencode_LR`: **`HL1 = 25`** (matches `APISR 25`, `-12` deeper vs `v31`), **`LapVar = 887.4`** (`+62` vs `v31`), **`MAE_AP = 4.34`**, **`PSNR = 27.05`** (`+0.69 dB`, beats `APISR 26.42` & `Strong_v3 26.64`), **`SSIM = 0.9400`**
+
 
 
 
