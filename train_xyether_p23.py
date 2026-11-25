@@ -35,6 +35,7 @@ from losses.xyether_losses import (
     Phase29VectorCleanLoss,
     Phase30APISRVectorLoss,
     Phase31SilkyVectorLoss,
+    Phase32EdgeBandLoss,
     VGGPerceptualLoss,
 )
 
@@ -203,6 +204,7 @@ def train_p23(args) -> None:
     is_p29 = args.loss_version >= 29
     is_p30 = args.loss_version >= 30
     is_p31 = args.loss_version >= 31
+    is_p32 = args.loss_version >= 32
     print(f"Phase {args.loss_version} Training | arch={args.arch} | device={device} | scratch_init={not resuming}")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -219,7 +221,10 @@ def train_p23(args) -> None:
         repeat=40,
         return_regime=is_p28,
         clean_prob=(0.25 if is_p31 else (0.30 if is_p30 else 0.20)),
+        use_h264=is_p32,
     )
+    if is_p32:
+        print(f"Dataset Real H.264 (PyAV libx264) Active: {dataset.use_h264}")
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -280,7 +285,9 @@ def train_p23(args) -> None:
         freq_micro_rescue=(args.loss_version == 27 or args.loss_version == 28),
         unclipped=is_p29,
     ).to(device)
-    if args.loss_version >= 31:
+    if args.loss_version >= 32:
+        criterion = Phase32EdgeBandLoss(edgeband_w=2.8).to(device)
+    elif args.loss_version >= 31:
         criterion = Phase31SilkyVectorLoss().to(device)
     elif args.loss_version >= 30:
         criterion = Phase30APISRVectorLoss().to(device)

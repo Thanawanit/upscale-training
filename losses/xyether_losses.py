@@ -2334,6 +2334,70 @@ class Phase31SilkyVectorLoss(Phase29VectorCleanLoss):
         }
 
 
+class Phase32EdgeBandLoss(Phase31SilkyVectorLoss):
+    """
+    Phase 32 Real-H.264 + Near-Edge Band De-Bleed Loss (Colab T4 Arm2_PyAV_EB winner):
+    - Extends Phase31SilkyVectorLoss with an explicit 2..5px Near-Edge Band Luma & Opponent-Chroma
+      De-Bleed term (`edgeband_w * l_eb`) targeting H.264 in-loop deblocking smudge right outside
+      black outlines (`near_band = dilate(edge_core, 7) - edge_core`).
+    """
+
+    def __init__(self, edgeband_w: float = 2.8):
+        super().__init__()
+        self.edgeband_w = float(edgeband_w)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        total, logs = super().forward(
+            pred,
+            tar_b,
+            gt_b,
+            lr_b,
+            edge_zone=edge_zone,
+            regime=regime,
+            warmstart_out=warmstart_out,
+            warmstart_weight=warmstart_weight,
+        )
+        pred_f = pred.float()
+        tar_f = tar_b.float()
+        luma_w = self.luma_w.to(pred.device)
+        py = (pred_f * luma_w).sum(dim=1, keepdim=True)
+        ay = (tar_f * luma_w).sum(dim=1, keepdim=True)
+
+        with torch.no_grad():
+            span3 = F.max_pool2d(ay, 3, 1, 1) - (-F.max_pool2d(-ay, 3, 1, 1))
+            edge_core = (span3 >= 0.137).float()
+            near_band = (F.max_pool2d(edge_core, 7, 1, 3) - edge_core).clamp(0.0, 1.0)
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            w_band = near_band * (0.50 + 1.50 * is_deg)
+
+        l_eb_y = (w_band * (py - ay).abs()).mean()
+        l_eb_chr = (
+            w_band
+            * (
+                (pred_f[:, 0:1] - pred_f[:, 1:2] - (tar_f[:, 0:1] - tar_f[:, 1:2])).abs()
+                + (pred_f[:, 2:3] - pred_f[:, 1:2] - (tar_f[:, 2:3] - tar_f[:, 1:2])).abs()
+            )
+        ).mean()
+        l_eb = l_eb_y + 0.85 * l_eb_chr
+        total = total + self.edgeband_w * l_eb
+        logs["l_eb"] = l_eb.item()
+        return total, logs
+
+
 
 
 

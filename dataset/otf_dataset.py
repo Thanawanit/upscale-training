@@ -1,3 +1,4 @@
+import io
 import os
 import random
 from pathlib import Path
@@ -5,6 +6,40 @@ import numpy as np
 import cv2
 import torch
 from torch.utils.data import Dataset
+
+try:
+    import av as _av
+except ImportError:
+    _av = None
+
+
+def _encode_h264_mem(bgr_img: np.ndarray, crf: int = 25) -> np.ndarray:
+    """Fast in-memory libx264 (yuv420p) encode/decode via PyAV to simulate real H.264 in-loop deblocking."""
+    if _av is None:
+        return bgr_img
+    h, w = bgr_img.shape[:2]
+    if h < 16 or w < 16 or (h % 2 != 0) or (w % 2 != 0):
+        return bgr_img
+    buf = io.BytesIO()
+    try:
+        with _av.open(buf, mode="w", format="mp4") as out_c:
+            stream = out_c.add_stream("libx264", rate=24)
+            stream.width = w
+            stream.height = h
+            stream.pix_fmt = "yuv420p"
+            stream.options = {"crf": str(int(crf)), "preset": "ultrafast"}
+            frame = _av.VideoFrame.from_ndarray(bgr_img, format="bgr24")
+            for pkt in stream.encode(frame):
+                out_c.mux(pkt)
+            for pkt in stream.encode():
+                out_c.mux(pkt)
+        buf.seek(0)
+        with _av.open(buf, mode="r", format="mp4") as in_c:
+            for fr in in_c.decode(video=0):
+                return fr.to_ndarray(format="bgr24")
+    except Exception:
+        return bgr_img
+    return bgr_img
 
 
 class AnimeOTFDataset(Dataset):
@@ -29,11 +64,13 @@ class AnimeOTFDataset(Dataset):
         repeat: int = 20,
         return_regime: bool = False,
         clean_prob: float = 0.20,
+        use_h264: bool = False,
     ):
         self.patch_size = patch_size
         self.repeat = repeat
         self.return_regime = return_regime
         self.clean_prob = float(clean_prob)
+        self.use_h264 = bool(use_h264) and (_av is not None)
 
         data_path = Path(data_dir)
         valid_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
@@ -205,17 +242,20 @@ class AnimeOTFDataset(Dataset):
         elif regime < t_med:
             regime_id = 1
             # Medium RealBlurry / 2025+ Stream 1080p YUV 4:2:0 regime
-            lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.45, sigma_max=1.10)
+            lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.40, sigma_max=0.95)
             interp = random.choices(
                 [cv2.INTER_AREA, cv2.INTER_LINEAR, cv2.INTER_CUBIC],
                 weights=[0.55, 0.25, 0.20]
             )[0]
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
-            if random.random() < 0.40:
+            if random.random() < 0.35:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.45)
-            lr_patch = apply_yuv420(lr_patch)
-            if random.random() < 0.85:
-                lr_patch = apply_codec(lr_patch, 68, 92, webp_p=0.30)
+            if self.use_h264:
+                lr_patch = _encode_h264_mem(lr_patch, crf=random.randint(20, 27))
+            else:
+                lr_patch = apply_yuv420(lr_patch)
+                if random.random() < 0.85:
+                    lr_patch = apply_codec(lr_patch, 68, 92, webp_p=0.30)
         elif regime < t_harsh:
             regime_id = 2
             # Harsh Compressed Web / Stream YUV 4:2:0 regime
@@ -229,13 +269,16 @@ class AnimeOTFDataset(Dataset):
             lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp)
             if random.random() < 0.40:
                 lr_patch = self._apply_gaussian_blur(lr_patch, sigma_min=0.25, sigma_max=0.50)
-            lr_patch = apply_yuv420(lr_patch)
-            lr_patch = apply_codec(lr_patch, 52, 74, webp_p=0.35)
-            if random.random() < 0.30:
-                lr_patch = apply_codec(lr_patch, 68, 88, webp_p=0.40)
+            if self.use_h264 and random.random() < 0.70:
+                lr_patch = _encode_h264_mem(lr_patch, crf=random.randint(26, 32))
+            else:
+                lr_patch = apply_yuv420(lr_patch)
+                lr_patch = apply_codec(lr_patch, 52, 74, webp_p=0.35)
+                if random.random() < 0.30:
+                    lr_patch = apply_codec(lr_patch, 68, 88, webp_p=0.40)
         else:
             regime_id = 3
-            # Shuffled-Resize & Bilinear/Cubic Curve-Jitter Multi-Codec Re-encode regime (30%)
+            # Shuffled-Resize & Bilinear/Cubic Curve-Jitter Multi-Codec Re-encode regime
             s_inter = random.uniform(0.58, 1.25)
             ih = max(lr_h, int(round(self.patch_size * s_inter)))
             iw = max(lr_w, int(round(self.patch_size * s_inter)))
@@ -256,9 +299,12 @@ class AnimeOTFDataset(Dataset):
                 lr_patch = apply_codec(lr_patch, 62, 84, webp_p=0.45)
                 lr_patch = cv2.resize(lr_patch, (iw, ih), interpolation=interp1)
                 lr_patch = cv2.resize(lr_patch, (lr_w, lr_h), interpolation=interp2)
-            if random.random() < 0.65:
-                lr_patch = apply_yuv420(lr_patch)
-            lr_patch = apply_codec(lr_patch, 58, 82, webp_p=0.55)
+            if self.use_h264 and random.random() < 0.45:
+                lr_patch = _encode_h264_mem(lr_patch, crf=random.randint(22, 29))
+            else:
+                if random.random() < 0.65:
+                    lr_patch = apply_yuv420(lr_patch)
+                lr_patch = apply_codec(lr_patch, 58, 82, webp_p=0.55)
 
         # Convert to RGB float [0, 1]
         hr_rgb = cv2.cvtColor(hr_patch, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
