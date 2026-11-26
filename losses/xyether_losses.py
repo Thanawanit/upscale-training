@@ -2538,6 +2538,144 @@ class Phase33MacroblockDebleedLoss(Phase32EdgeBandLoss):
         return total, logs
 
 
+class Phase34ChrSnapLoss(Phase33MacroblockDebleedLoss):
+    """
+    Phase 34 Punchy-Vector + Unchoked Outline Chroma-Snap Loss (Smoking Gun #5 Fix):
+    1. Gentle Edge-Masked Luma Unsharp Teacher Boost (`unsharp_amt=0.06`, strictly on edges) + Asymmetric
+       Gradient Under-Shoot (`l_punch`) + Micro-Contrast `LowR` Rescue (`l_lowr`) + Harsh Laplacian Floor.
+    2. Full `edge_all = dilate(edge_core, 7)` Chroma De-Bleed (INCLUDES `edge_core` itself, fixing 1-2px
+       outline color bleed missed by `near_band = dilate - edge_core`).
+    3. `12x` Neutral-Ink Chroma Lock (`l_ink_neutral`): forbids colored bleed from tinting dark neutral outlines.
+    """
+
+    def __init__(
+        self,
+        unsharp_amt: float = 0.06,
+        punch_w: float = 1.8,
+        lowr_w: float = 1.8,
+        mb_w: float = 5.5,
+        edgeband_w: float = 3.8,
+        chr_eb_w: float = 5.5,
+        cgrad_w: float = 4.0,
+        cel_chr_w: float = 2.6,
+        pix_chr_w: float = 3.5,
+    ):
+        super().__init__(
+            mb_w=mb_w,
+            edgeband_w=edgeband_w,
+            chr_eb_w=chr_eb_w,
+            cgrad_w=cgrad_w,
+            cel_chr_w=cel_chr_w,
+            pix_chr_w=pix_chr_w,
+        )
+        self.unsharp_amt = float(unsharp_amt)
+        self.punch_w = float(punch_w)
+        self.lowr_w = float(lowr_w)
+
+    def _boost_target_luma(self, tar_b: torch.Tensor) -> torch.Tensor:
+        if self.unsharp_amt <= 0.0:
+            return tar_b
+        with torch.no_grad():
+            lw = self.luma_w.to(tar_b.device)
+            ay = (tar_b * lw).sum(dim=1, keepdim=True)
+            span3 = F.max_pool2d(ay, 3, 1, 1) - (-F.max_pool2d(-ay, 3, 1, 1))
+            edge_m = ((span3 - 0.030) / 0.045).clamp(0.0, 1.0)
+            blur3 = F.avg_pool2d(F.pad(ay, (1, 1, 1, 1), mode="reflect"), 3, 1)
+            hp = (ay - blur3).clamp(-0.12, 0.12)
+            return (tar_b + self.unsharp_amt * edge_m * hp).clamp(0.0, 1.0)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        tar_eff = self._boost_target_luma(tar_b.float())
+        total, logs = super().forward(
+            pred,
+            tar_eff,
+            gt_b,
+            lr_b,
+            edge_zone=edge_zone,
+            regime=regime,
+            warmstart_out=warmstart_out,
+            warmstart_weight=warmstart_weight,
+        )
+        pf = pred.float()
+        af = tar_b.float()
+        lw = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+        py = (pf * lw).sum(dim=1, keepdim=True)
+        ay_eff = (tar_eff * lw).sum(dim=1, keepdim=True)
+        ay = (af * lw).sum(dim=1, keepdim=True)
+        prg, arg = pf[:, 0:1] - pf[:, 1:2], af[:, 0:1] - af[:, 1:2]
+        pbg, abg = pf[:, 2:3] - pf[:, 1:2], af[:, 2:3] - af[:, 1:2]
+
+        with torch.no_grad():
+            span3_eff = F.max_pool2d(ay_eff, 3, 1, 1) - (-F.max_pool2d(-ay_eff, 3, 1, 1))
+            span_y = F.max_pool2d(ay, 3, 1, 1) - (-F.max_pool2d(-ay, 3, 1, 1))
+            span_chr = torch.maximum(
+                F.max_pool2d(arg, 3, 1, 1) - (-F.max_pool2d(-arg, 3, 1, 1)),
+                F.max_pool2d(abg, 3, 1, 1) - (-F.max_pool2d(-abg, 3, 1, 1)),
+            )
+            span_j = torch.maximum(span_y, 0.85 * span_chr)
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            is_harsh = torch.zeros_like(is_deg) if regime is None else (regime >= 2).float().view(-1, 1, 1, 1)
+            w_sharp = 1.0 + 0.85 * is_deg + 0.65 * is_harsh
+            w_chr = 0.60 + 1.60 * is_deg
+
+            m_lowr = ((span3_eff >= 0.015) & (span3_eff < 0.095)).float() * w_sharp
+            m_edge = ((span3_eff - 0.035) / 0.055).clamp(0.0, 1.0) * w_sharp
+            edge_core = (span_j >= 0.10).float()
+            edge_all = F.max_pool2d(edge_core, 7, 1, 3)
+            m_neutral_ink = ((ay < 0.28) & (arg.abs() < 0.045) & (abg.abs() < 0.045) & (edge_all > 0.5)).float()
+
+        # 1. Asymmetric Directional Gradient Under-Shoot Penalty (punishes softness ONLY)
+        dxp, dxa = py[:, :, :, 1:] - py[:, :, :, :-1], ay_eff[:, :, :, 1:] - ay_eff[:, :, :, :-1]
+        dyp, dya = py[:, :, 1:, :] - py[:, :, :-1, :], ay_eff[:, :, 1:, :] - ay_eff[:, :, :-1, :]
+        d1p, d1a = py[:, :, 1:, 1:] - py[:, :, :-1, :-1], ay_eff[:, :, 1:, 1:] - ay_eff[:, :, :-1, :-1]
+        d2p, d2a = py[:, :, 1:, :-1] - py[:, :, :-1, 1:], ay_eff[:, :, 1:, :-1] - ay_eff[:, :, :-1, 1:]
+        l_punch = (
+            (m_edge[:, :, :, 1:] * F.relu(dxa.abs() - dxp * torch.sign(dxa))).mean()
+            + (m_edge[:, :, 1:, :] * F.relu(dya.abs() - dyp * torch.sign(dya))).mean()
+            + 0.65 * (m_edge[:, :, 1:, 1:] * F.relu(d1a.abs() - d1p * torch.sign(d1a))).mean()
+            + 0.65 * (m_edge[:, :, 1:, :-1] * F.relu(d2a.abs() - d2p * torch.sign(d2a))).mean()
+        )
+
+        # 2. Micro-Contrast LowR Rescue + Harsh Edge Laplacian Floor
+        lap_p = F.conv2d(py, lap_k, padding=1)
+        lap_a = F.conv2d(ay_eff, lap_k, padding=1)
+        l_lowr = (m_lowr * (F.relu(lap_a.abs() - lap_p.abs()) + 0.55 * (lap_p - lap_a).abs())).mean()
+        l_hlap = (m_edge * F.relu(lap_a.abs() - lap_p.abs())).mean()
+
+        # 3. Full edge_all (INCLUDING edge_core) Chroma De-Bleed + 12x Neutral-Ink Chroma Lock
+        l_edge_chr_all = (edge_all * w_chr * ((prg - arg).abs() + (pbg - abg).abs())).mean()
+        l_ink_neutral = (m_neutral_ink * w_chr * ((prg - arg).abs() + (pbg - abg).abs())).mean()
+
+        total = (
+            total
+            + self.punch_w * l_punch
+            + self.lowr_w * l_lowr
+            + 1.40 * l_hlap
+            + 8.0 * l_edge_chr_all
+            + 12.0 * l_ink_neutral
+        )
+        logs["l_punch"] = l_punch.item()
+        logs["l_ecall"] = l_edge_chr_all.item()
+        logs["l_inkn"] = l_ink_neutral.item()
+        return total, logs
+
+
+
 
 
 

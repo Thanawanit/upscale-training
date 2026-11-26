@@ -17,7 +17,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from archs.xyether_lineflow import XyetherLineFlowChrDeblockNet, XyetherLineFlowNet
+from archs.xyether_lineflow import XyetherLineFlowChrDeblockNet, XyetherLineFlowChrSnapNet, XyetherLineFlowNet
 from archs.xyether_rephybrid import XyetherRepHybridNet
 from benchmark.xyether_evaluator import XyetherEvaluator
 from dataset.otf_dataset import AnimeOTFDataset
@@ -37,6 +37,7 @@ from losses.xyether_losses import (
     Phase31SilkyVectorLoss,
     Phase32EdgeBandLoss,
     Phase33MacroblockDebleedLoss,
+    Phase34ChrSnapLoss,
     VGGPerceptualLoss,
 )
 
@@ -156,6 +157,8 @@ def save_checkpoint(model, ema, args, step: int, tag: str) -> str:
     pth_path = os.path.join(args.output_dir, f"{args.model_prefix}_{tag}.pth")
     if args.arch == "rephybrid":
         arch_name = "XyetherRepHybridNet"
+    elif args.arch == "lineflow_chrsnap":
+        arch_name = "XyetherLineFlowChrSnapNet"
     elif args.arch == "lineflow_chrdeblock":
         arch_name = "XyetherLineFlowChrDeblockNet"
     else:
@@ -252,6 +255,14 @@ def train_p23(args) -> None:
             num_blocks=args.num_blocks,
             upscale=2,
         ).to(device)
+    elif args.arch == "lineflow_chrsnap":
+        model = XyetherLineFlowChrSnapNet(
+            num_in_ch=3,
+            num_out_ch=3,
+            num_feat=args.num_feat,
+            num_blocks=args.num_blocks,
+            upscale=2,
+        ).to(device)
     elif args.arch == "lineflow_chrdeblock":
         model = XyetherLineFlowChrDeblockNet(
             num_in_ch=3,
@@ -274,7 +285,17 @@ def train_p23(args) -> None:
         ckpt = torch.load(args.resume_path, map_location=device)
         sd = ckpt.get("params_ema", ckpt.get("params", ckpt))
         clean_sd = {k.replace("module.", ""): v.float() for k, v in sd.items()}
-        if args.arch == "lineflow_chrdeblock":
+        if args.arch == "lineflow_chrsnap":
+            # Drop old 1x1 c_ref keys from v33 if shapes mismatch the new DW3x3 c_ref
+            msd = model.state_dict()
+            compat_sd = {k: v for k, v in clean_sd.items() if k in msd and msd[k].shape == v.shape}
+            missing, unexpected = model.load_state_dict(compat_sd, strict=False)
+            new_head_keys = set(missing) | {k for k in msd if k.startswith("cd1.")}
+            print(
+                f"Resumed own v33 weights into ChrSnapNet: {args.resume_path} "
+                f"(loaded={len(compat_sd)}/{len(msd)}, new_dw3_tensors={len(missing)}, unexp={len(unexpected)})"
+            )
+        elif args.arch == "lineflow_chrdeblock":
             missing, unexpected = model.load_state_dict(clean_sd, strict=False)
             new_head_keys = set(missing)
             print(
@@ -311,7 +332,9 @@ def train_p23(args) -> None:
         freq_micro_rescue=(args.loss_version == 27 or args.loss_version == 28),
         unclipped=is_p29,
     ).to(device)
-    if args.loss_version >= 33:
+    if args.loss_version >= 34:
+        criterion = Phase34ChrSnapLoss().to(device)
+    elif args.loss_version >= 33:
         criterion = Phase33MacroblockDebleedLoss().to(device)
     elif args.loss_version >= 32:
         criterion = Phase32EdgeBandLoss(edgeband_w=2.8).to(device)
@@ -512,7 +535,12 @@ def train_p23(args) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Phase 23-29 Xyether AnimeSR")
     parser.add_argument("--data_dir", type=str, default="/kaggle/working/Elite_Anime_4K")
-    parser.add_argument("--arch", type=str, default="lineflow", choices=["lineflow", "lineflow_chrdeblock", "rephybrid"])
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="lineflow",
+        choices=["lineflow", "lineflow_chrdeblock", "lineflow_chrsnap", "rephybrid"],
+    )
     parser.add_argument("--resume_path", type=str, default="")
     parser.add_argument("--resume_url", type=str, default="")
     parser.add_argument("--warmstart_ckpt", type=str, default="")

@@ -149,3 +149,51 @@ class XyetherLineFlowChrDeblockNet(XyetherLineFlowNet):
         B_n = G_n + BG_n
         return torch.clamp(torch.cat([R_n, G_n, B_n], dim=1), 0.0, 1.0)
 
+
+class XyetherLineFlowChrSnapNet(XyetherLineFlowChrDeblockNet):
+    """
+    Phase 34 Own Architecture (Option A Winner):
+    - Preserves 100% of Full 8-Block 56ch PReLU LineFlow backbone (razor-straight 1px eyelashes, zero wobble).
+    - Upgrades HR chroma refinement `c_ref` from blind 1x1 to Depthwise 3x3 + 1x1 Luma-Guided HR Edge-Snap.
+    - Replaces tiny chr_alpha choke with unchoked `0.50 * tanh(c_ref(...))` + pure-black `ink_keep` gate
+      so strong ±30/255 outline chroma bleed is cleanly canceled while guaranteeing `line_depth == 0.00`.
+    """
+    def __init__(self, num_in_ch: int = 3, num_out_ch: int = 3, num_feat: int = 56, num_blocks: int = 8, upscale: int = 2):
+        super().__init__(num_in_ch=num_in_ch, num_out_ch=num_out_ch, num_feat=num_feat, num_blocks=num_blocks, upscale=upscale)
+        self.c_ref = nn.Sequential(
+            nn.Conv2d(27, 27, 3, 1, 1, groups=27),
+            nn.Conv2d(27, 16, 1, 1, 0),
+            nn.PReLU(16, init=0.2),
+            nn.Conv2d(16, 16, 3, 1, 1, groups=16),
+            nn.Conv2d(16, 2, 1, 1, 0),
+        )
+        # Small init on last 1x1 so step 0 starts near v33 cleanly, while 0.50*tanh unlocks full chroma snap
+        nn.init.normal_(self.c_ref[-1].weight, std=0.01)
+        nn.init.zeros_(self.c_ref[-1].bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = super(XyetherLineFlowChrDeblockNet, self).forward(x)
+        Y = 0.299 * out[:, 0:1] + 0.587 * out[:, 1:2] + 0.114 * out[:, 2:3]
+        RG = out[:, 0:1] - out[:, 1:2]
+        BG = out[:, 2:3] - out[:, 1:2]
+        inp = torch.cat([Y, RG, BG], dim=1)
+
+        s1 = self.ce1(inp)
+        s2 = self.ce2(s1)
+        s3 = self.ce3(s2)
+        s4 = self.ce4(s3)
+        u3 = self.cd3(torch.cat([F.interpolate(s4, size=s3.shape[-2:], mode='bilinear', align_corners=False), s3], dim=1))
+        u2 = self.cd2(torch.cat([F.interpolate(u3, size=s2.shape[-2:], mode='bilinear', align_corners=False), s2], dim=1))
+        u1 = self.cd1(torch.cat([F.interpolate(u2, size=s1.shape[-2:], mode='bilinear', align_corners=False), s1], dim=1))
+        u0 = F.interpolate(u1, size=out.shape[-2:], mode='bilinear', align_corners=False)
+
+        ink_keep = torch.clamp(Y * 25.0, 0.0, 1.0)
+        delta_c = 0.50 * ink_keep * torch.tanh(self.c_ref(torch.cat([u0, inp], dim=1)))
+        RG_n = RG + delta_c[:, 0:1]
+        BG_n = BG + delta_c[:, 1:2]
+        G_n = Y - 0.299 * RG_n - 0.114 * BG_n
+        R_n = G_n + RG_n
+        B_n = G_n + BG_n
+        return torch.clamp(torch.cat([R_n, G_n, B_n], dim=1), 0.0, 1.0)
+
+
