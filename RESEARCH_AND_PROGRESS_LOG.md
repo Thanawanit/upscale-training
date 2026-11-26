@@ -1270,6 +1270,27 @@ Upgraded `c_ref` in `ChrDeblockHead` from spatially-blind `1×1` to **Depthwise 
 - **`ExpB_Full8B_DW3` (`~235 ms`, keeps all 16 strips):** `clean LapV=1451.5 | BG=3.11`; `h264 LapV=1277.1 | BG=3.26` (beats `v33 3.41`); `eb=0.0496`, `mb=0.0680` (lowest `eb/mb` loss ever!) and **cleanest 1px eyelash straightness** on 4× zoomed `Kusu_Fine`.
 - **`ChrSnap_SG5` (Smoking Gun #5 Fix — `0.50*tanh` unchoked `DW3x3 c_ref` + `edge_all` INCLUDING `edge_core` + `12x` Neutral-Ink Chroma Lock, 400 steps, [`p34_sg5_chrsnap_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p34_sg5_chrsnap_zoom.jpg)):** Cut neutral-ink chroma bleed `l_inkn` by **`-75%`** (`0.0088 -> 0.0022`), improved `RG` over `ExpB_DW3` (`4.10->4.02` clean, `4.03->3.95` H.264), dimmed the orange edge-bleed streak on `Gach_H264`, and kept `LapV = 1448.7 / 1274.3` (`+73/+60` sharper than `v33`) with razor-straight `Kusu_Fine` eyelashes.
 
+---
+
+## 22. Phase 34 — `XyetherLineFlow_v34` Final Kaggle Training & Audit (`v46`, `XyetherLineFlowChrSnapNet` + `Phase34ChrSnapLoss`)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowChrSnapNet(56ch, 8b, PReLU)` = Full 8-block `v33` backbone + `DW3x3` Luma-Guided HR Edge-Snap + unchoked `0.50 * tanh(c_ref)` + pure-black `ink_keep` gate, `655,149` params), trained `5,500` iters on Kaggle GPU (`batch=12`, differential LR `1e-4` backbone / `5e-4` `c_ref + cd1`, `Phase34ChrSnapLoss` with `unsharp_amt=0.06` + `l_punch` + `l_lowr` + `edge_all` chroma de-bleed + `12x` Neutral-Ink Chroma Lock, `100% APISR` Luv `0.30`, `LPIPS 0.45`, `PatchGAN 0.05`, `EMA 0.9992`).
+- **Archived Production Artifacts ([`checkpoints/Phase34_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase34_XyetherLineFlow_v1/)) & HuggingFace (`Thanawanit/Kaggle-Backup/checkpoints/Phase34_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v34_Final.pth` (`5.33 MB`, `params_ema`)
+  - `XyetherLineFlow_v34_Final.onnx` (`2.66 MB` — FP32 parity `max_abs_diff = 9.83e-07`)
+  - `XyetherLineFlow_v34_Final_FP16.onnx` (`1.36 MB` — FP16 parity `max_abs_diff = 1.56e-03`)
+  - `phase34_metrics_report.json` (`42.7 KB`)
+- **`XyetherEvaluator` Final:** **`line_depth = 0.00`**, `overshoot_halo = 14.2982`, `noise_residual_std = 15.71`, `sharpness_lapvar = 813.9`.
+- **All-Time Record Chroma Cleanliness on `Gach_Coat (004.png)` ([`p34_final_2025plus_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p34_final_2025plus_zoom.jpg)):**
+  - **H264 vs `APISR_2x(h264)`:** **`RG = 3.03 (v32) -> 2.54 (v33) -> 2.47 (v34)`** | **`BG = 2.65 -> 2.39 -> 2.30`** | **`FLAT RG = 1.56 -> 1.26 -> 1.20`** | **`FLAT BG = 1.59 -> 1.47`**
+  - **H264 vs `APISR_2x(CLEAN Oracle)`:** **`RG = 3.86 -> 3.42 -> 3.28`** | **`BG = 3.23 -> 3.07 -> 2.94`** | **`FLAT RG = 1.81 -> 1.60 -> 1.51`** | **`FLAT BG = 2.01 -> 1.86`**
+  - **CLEAN vs `APISR_2x(CLEAN)`:** **`RG = 2.29 -> 2.25`** | **`BG = 2.12 -> 2.02`** | **`FLAT RG = 1.08 -> 1.02`** | **`FLAT BG = 1.35 -> 1.22`**
+- **All-Time Record Sharpness & Hairline Punch on 4-Regime `test_anime.png` (Beats BOTH `APISR_2x` AND `Strong_v3` on `LapVar` & `HL1`!):**
+  - `Clean_LR`: **`HL1 = 5 / HL2 = 23`** (deepest ever!), **`LapVar = 1178.0`** (`+113.4` vs `v33`, beats `Strong_v3 1058.3` & `APISR 969.3`!), **`MicroLap = 3.18`** (beats `APISR 3.08`!), `Chk = 0.16`
+  - `RealBlurry_LR`: **`HL1 = 9`** (matches `Strong_v3 9`, `-6` deeper than `v33`!), **`LapVar = 1102.5`** (`+129.4` vs `v33`, beats `Strong_v3 1017.9` & `APISR 958.3`!), **`MicroLap = 3.27`**
+  - `Harsh_Q62_LR`: **`HL1 = 22`** (`-7` deeper than `v33`, beats `Strong_v3 40`!), **`LapVar = 913.1`** (`+116.2` vs `v33`, beats `APISR 895.7`!), **`MicroLap = 3.20`**
+  - `Shuffled_Reencode_LR`: **`HL1 = 21`** (beats `Strong_v3 22` & `APISR 25`!), **`LapVar = 970.8`** (`+122.8` vs `v33`, beats `APISR 936.5`!), **`Chk = 0.14`**
+
+
 
 
 
