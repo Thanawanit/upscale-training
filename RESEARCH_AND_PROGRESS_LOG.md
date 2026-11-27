@@ -1290,6 +1290,42 @@ Upgraded `c_ref` in `ChrDeblockHead` from spatially-blind `1×1` to **Depthwise 
   - `Harsh_Q62_LR`: **`HL1 = 22`** (`-7` deeper than `v33`, beats `Strong_v3 40`!), **`LapVar = 913.1`** (`+116.2` vs `v33`, beats `APISR 895.7`!), **`MicroLap = 3.20`**
   - `Shuffled_Reencode_LR`: **`HL1 = 21`** (beats `Strong_v3 22` & `APISR 25`!), **`LapVar = 970.8`** (`+122.8` vs `v33`, beats `APISR 936.5`!), **`Chk = 0.14`**
 
+---
+
+## 23. Phase 35 Pre-Flight — Non-Black Colored-Lineart Forensics, Speed Breakthrough (`-24.8%`) & Controlled Ablation
+
+### 23.1 Strict 5-Title + 2026++ Anime Benchmark & Root Cause of Non-Black Line Wobble
+Built a dedicated **14-frame native 1080p** benchmark strictly from the 5 user-specified titles + 2026++ anime ONLY:
+- *Though I Am an Inept Villainess* (2026), *The Girl Downstairs*, *Chainsaw Man (Reze Arc)*, *The Ramparts of Ice* (2026), *Alya Sometimes Hides Her Feelings in Russian (Roshidere)*, plus *Witch Hat Atelier* (2026) and *Frieren Season 2* (2026).
+
+**Root Cause 100% Proven ([`p35_forensic_v34_colored_lines.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p35_forensic_v34_colored_lines.jpg)):**
+- In `Phase31SilkyVectorLoss` / `Phase34ChrSnapLoss` (`losses/xyether_losses.py` L2264–2297, L2620–2663), ALL line-geometry & sharpness losses (`is_edge`, `l_hess`, `l_curve`, `l_lap`, `l_punch`, `l_lowr`, `_boost_target_luma`) were computed **strictly on Luma `Y`**.
+- On non-black colored lineart (coral-on-white in *Frieren S2*, red/pink ribbon & silver hair in *Alya*, green-on-blue in *Inept Villainess*, brown/skin lines in *Girl Downstairs*), Luma `span_y` is small while Opponent-Chroma `(R-G, B-G)` contrast is large — leaving colored lines with **zero Hessian straightness / tangent smoothness**, causing visible diagonal staircasing/wobble and `-101` `LapVar` softness gap vs `APISR_2x` (`2098` vs `2200` H.264; `2239` vs `2340` Clean).
+
+### 23.2 Colab T4 ORT FP16 Speed Sweep (`540p -> 1080p`, `CUDAExecutionProvider` via `ort.preload_dlls`)
+| Candidate Architecture | Params | FP16 ONNX | T4 ORT FP16 (`540p->1080p`) | Speedup vs `v34` | Verdict |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `v34_Full8B_Baseline` (`ChrSnap 24/32/48`, 1080p DW3x3) | `655,149` | `1.36 MB` | `282.8 ms` | `0.0%` | Production Baseline |
+| `Full8B_56_PUChr16` (Lossless `PixelUnshuffle(2)` 540p ChrSnap) | `585,580` | `1.22 MB` | `256.4 ms` | `-9.3%` | Safe, slower than `HS8B` |
+| `HS8B_Chr24_DW2x` (HalfStrip + 1080p ChrSnap) | `650,668` | `1.35 MB` | `253.8 ms` | `-10.3%` | Superseded by `PUChr16` |
+| `HS8B_Chr16_FastCRef_540` (HalfStrip + 1080p 12ch DW) | `576,002` | `1.20 MB` | `222.1 ms` | `-21.5%` | Superseded by `PUChr16` |
+| **`HS8B_56_PUChr16`** (**8B 56ch HalfStrip + Lossless `PixelUnshuffle(2)` 540p ChrSnap**) | **`581,100`** | **`1.21 MB`** | **`212.8 ms`** | **`-24.8%`** | **WINNER — ZERO 1080p convs, ZERO wobble!** |
+| `HS6B_56_PUChr16` (Pruned 6-Block) | `463,500` | `0.97 MB` | `173.1 ms` | `-38.8%` | **REJECTED** (breaks 30k geometry, `LapVar` drops `2098->1527`) |
+| `HS8B_48_PUChr16` (Pruned 48ch) | `447,620` | `0.94 MB` | `161.9 ms` | `-42.8%` | **REJECTED** (channel pruning breaks `v34` geometry) |
+
+### 23.3 Controlled Ablation on Strict 14-Frame 5-Title + 2026++ Suite (`p35_ablation_arms_zoom.jpg`, `p35_near_vs_bilin_zoom.jpg`)
+All candidates warm-started strictly from own `XyetherLineFlow_v34_Final.pth`, trained on 26 disjoint 1080p frames with `Phase35SharpColoredVectorLoss` (H+V+45°+135° Colored-Lineart Hessian Straightness on `(Y, RG, BG)` + Colored-Lineart Tangent Angle Smoothness on `(RG, BG)` + Colored-Edge Asymmetric Gradient Punch + `unsharp_amt=0.11`):
+
+| Regime | Model | Speed (ORT FP16) | `ColHessY` ↓ | `ColHessC` ↓ | `ChrFlat` ↓ | `LapVar` ↑ | `ColGradR` ↑ | Visual Verdict |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **H.264** | `v34_Baseline` | `282.8 ms` | `16.99` | `10.26` | `2.53` | `2098.2` | `1.554` | Jagged coral/red/green colored edges |
+| **H.264** | `ArmC_HS6B_PU16` | `173.1 ms` | `14.13` | `9.67` | `2.68` | `1527.1` | `1.679` | **REJECTED** (blurry/double edges) |
+| **H.264** | `P35_HS8B_Bilin` (320 it) | `212.9 ms` | `17.07` | `11.83` | `2.63` | `2107.6` | `1.614` | **REJECTED** (bilinear base adds halo) |
+| **H.264** | **`P35_HS8B_Near` (320 it)** | **`212.8 ms (-24.8%)`** | **`16.74`** | **`10.22`** | **`2.50`** | **`2115.2`** | **`1.560`** | **WINNER — beats `v34` on EVERY axis!** |
+| **CLEAN** | `v34_Baseline` | `282.8 ms` | `17.88` | `10.98` | `2.42` | `2239.0` | `1.659` | Baseline |
+| **CLEAN** | **`P35_HS8B_Near` (320 it)** | **`212.8 ms (-24.8%)`** | **`17.74`** | **`10.92`** | **`2.39`** | **`2270.8`** | **`1.660`** | **WINNER (+31.8 LapVar, cleaner & straighter!)** |
+
+
 
 
 

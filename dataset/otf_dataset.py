@@ -141,7 +141,16 @@ class AnimeOTFDataset(Dataset):
             f_p = patch.astype(np.float32)
             dx = np.abs(f_p[:, 1:, :] - f_p[:, :-1, :]).max(axis=2).mean()
             dy = np.abs(f_p[1:, :, :] - f_p[:-1, :, :]).max(axis=2).mean()
-            edge_energy = dx + dy
+            # Phase 35: boost Opponent-Chroma edge energy (|d(R-G)| + |d(B-G)|) so colored lineart is sampled richly
+            rg = f_p[:, :, 2] - f_p[:, :, 1]
+            bg = f_p[:, :, 0] - f_p[:, :, 1]
+            chr_edge = (
+                np.abs(rg[:, 1:] - rg[:, :-1]).mean()
+                + np.abs(rg[1:, :] - rg[:-1, :]).mean()
+                + np.abs(bg[:, 1:] - bg[:, :-1]).mean()
+                + np.abs(bg[1:, :] - bg[:-1, :]).mean()
+            ) * 0.5
+            edge_energy = dx + dy + 0.85 * chr_edge
             c_span = f_p.max(axis=2) - f_p.min(axis=2)
             sat_ratio = float((c_span > 95.0).mean())
             warm_red_ratio = float(((f_p[:, :, 2] - np.maximum(f_p[:, :, 1], f_p[:, :, 0])) > 90.0).mean())

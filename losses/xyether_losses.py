@@ -2675,6 +2675,158 @@ class Phase34ChrSnapLoss(Phase33MacroblockDebleedLoss):
         return total, logs
 
 
+class Phase35SharpColoredVectorLoss(Phase34ChrSnapLoss):
+    """
+    Phase 35 Sharp Colored-Lineart Vector Loss (Verified on 5 User Titles + 2026++ Anime):
+    Fixes Luma-only blindness on non-black colored lineart (coral/pink/red/brown/green-on-blue/silver)
+    by adding on top of Phase34ChrSnapLoss:
+      1. H + V + 45-deg + 135-deg 2nd-Order Hessian Straightness (`l_col_hess`) on (Y, R-G, B-G)
+         specifically masked to non-black colored edges (`span_chr >= 0.032 & Y > 0.14`).
+      2. Colored-Lineart Tangent Angle Smoothness (`l_col_curve`) on (R-G, B-G) gradients.
+      3. Asymmetric Colored-Edge Gradient Punch (`l_col_punch`) + Colored-Edge Laplacian Floor (`l_col_lap`)
+         + crisper edge-masked Luma unsharp (`unsharp_amt=0.11`, `punch_w=3.0`, `lowr_w=2.6`).
+    """
+
+    def __init__(
+        self,
+        unsharp_amt: float = 0.11,
+        punch_w: float = 3.0,
+        lowr_w: float = 2.6,
+        col_hess_w: float = 4.0,
+        col_curve_w: float = 3.2,
+        col_punch_w: float = 3.5,
+        col_lap_w: float = 2.4,
+    ):
+        super().__init__(
+            unsharp_amt=unsharp_amt,
+            punch_w=punch_w,
+            lowr_w=lowr_w,
+        )
+        self.col_hess_w = float(col_hess_w)
+        self.col_curve_w = float(col_curve_w)
+        self.col_punch_w = float(col_punch_w)
+        self.col_lap_w = float(col_lap_w)
+
+    @staticmethod
+    def _angle_smooth_1ch(p: torch.Tensor, a: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        gxp, gyp = p[:, :, 1:, 1:] - p[:, :, 1:, :-1], p[:, :, 1:, 1:] - p[:, :, :-1, 1:]
+        gxa, gya = a[:, :, 1:, 1:] - a[:, :, 1:, :-1], a[:, :, 1:, 1:] - a[:, :, :-1, 1:]
+        mag_p = torch.sqrt(gxp * gxp + gyp * gyp + 1e-6)
+        mag_a = torch.sqrt(gxa * gxa + gya * gya + 1e-6)
+        cos_sim = (gxp * gxa + gyp * gya) / (mag_p * mag_a)
+        m = mask[:, :, 1:, 1:] * ((mag_a - 0.015) / 0.035).clamp(0.0, 1.0)
+        return (m * (1.0 - cos_sim).clamp(0.0, 2.0)).mean()
+
+    @staticmethod
+    def _hess_4dir_1ch(p: torch.Tensor, a: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
+        d2x = (
+            m[:, :, :, 1:-1]
+            * (
+                (p[:, :, :, 2:] - 2.0 * p[:, :, :, 1:-1] + p[:, :, :, :-2])
+                - (a[:, :, :, 2:] - 2.0 * a[:, :, :, 1:-1] + a[:, :, :, :-2])
+            ).abs()
+        ).mean()
+        d2y = (
+            m[:, :, 1:-1, :]
+            * (
+                (p[:, :, 2:, :] - 2.0 * p[:, :, 1:-1, :] + p[:, :, :-2, :])
+                - (a[:, :, 2:, :] - 2.0 * a[:, :, 1:-1, :] + a[:, :, :-2, :])
+            ).abs()
+        ).mean()
+        d2d1 = (
+            m[:, :, 1:-1, 1:-1]
+            * (
+                (p[:, :, 2:, 2:] - 2.0 * p[:, :, 1:-1, 1:-1] + p[:, :, :-2, :-2])
+                - (a[:, :, 2:, 2:] - 2.0 * a[:, :, 1:-1, 1:-1] + a[:, :, :-2, :-2])
+            ).abs()
+        ).mean()
+        d2d2 = (
+            m[:, :, 1:-1, 1:-1]
+            * (
+                (p[:, :, 2:, :-2] - 2.0 * p[:, :, 1:-1, 1:-1] + p[:, :, :-2, 2:])
+                - (a[:, :, 2:, :-2] - 2.0 * a[:, :, 1:-1, 1:-1] + a[:, :, :-2, 2:])
+            ).abs()
+        ).mean()
+        return d2x + d2y + 0.90 * (d2d1 + d2d2)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        total, logs = super().forward(
+            pred,
+            tar_b,
+            gt_b,
+            lr_b,
+            edge_zone=edge_zone,
+            regime=regime,
+            warmstart_out=warmstart_out,
+            warmstart_weight=warmstart_weight,
+        )
+        pf = pred.float()
+        af = tar_b.float()
+        lw = self.luma_w.to(pred.device)
+        lap_k = self.lap_k.to(pred.device)
+        py, ay = (pf * lw).sum(dim=1, keepdim=True), (af * lw).sum(dim=1, keepdim=True)
+        prg, arg = pf[:, 0:1] - pf[:, 1:2], af[:, 0:1] - af[:, 1:2]
+        pbg, abg = pf[:, 2:3] - pf[:, 1:2], af[:, 2:3] - af[:, 1:2]
+
+        with torch.no_grad():
+            span_rg = F.max_pool2d(arg, 3, 1, 1) - (-F.max_pool2d(-arg, 3, 1, 1))
+            span_bg = F.max_pool2d(abg, 3, 1, 1) - (-F.max_pool2d(-abg, 3, 1, 1))
+            span_chr = torch.maximum(span_rg, span_bg)
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            w_deg = 1.0 + 0.75 * is_deg
+            m_col = ((span_chr - 0.032) / 0.055).clamp(0.0, 1.0) * (ay > 0.14).float() * w_deg
+
+        l_col_hess = (
+            self._hess_4dir_1ch(py, ay, m_col)
+            + 1.15 * self._hess_4dir_1ch(prg, arg, m_col)
+            + 1.15 * self._hess_4dir_1ch(pbg, abg, m_col)
+        )
+        l_col_curve = self._angle_smooth_1ch(prg, arg, m_col) + self._angle_smooth_1ch(pbg, abg, m_col)
+
+        l_col_punch = pf.new_tensor(0.0)
+        for pc, ac in [(prg, arg), (pbg, abg)]:
+            dxp, dxa = pc[:, :, :, 1:] - pc[:, :, :, :-1], ac[:, :, :, 1:] - ac[:, :, :, :-1]
+            dyp, dya = pc[:, :, 1:, :] - pc[:, :, :-1, :], ac[:, :, 1:, :] - ac[:, :, :-1, :]
+            d1p, d1a = pc[:, :, 1:, 1:] - pc[:, :, :-1, :-1], ac[:, :, 1:, 1:] - ac[:, :, :-1, :-1]
+            d2p, d2a = pc[:, :, 1:, :-1] - pc[:, :, :-1, 1:], ac[:, :, 1:, :-1] - ac[:, :, :-1, 1:]
+            l_col_punch = l_col_punch + (
+                (m_col[:, :, :, 1:] * F.relu(dxa.abs() - dxp * torch.sign(dxa))).mean()
+                + (m_col[:, :, 1:, :] * F.relu(dya.abs() - dyp * torch.sign(dya))).mean()
+                + 0.65 * (m_col[:, :, 1:, 1:] * F.relu(d1a.abs() - d1p * torch.sign(d1a))).mean()
+                + 0.65 * (m_col[:, :, 1:, :-1] * F.relu(d2a.abs() - d2p * torch.sign(d2a))).mean()
+            )
+
+        l_col_lap = (
+            (m_col * F.relu(F.conv2d(arg, lap_k, padding=1).abs() - F.conv2d(prg, lap_k, padding=1).abs())).mean()
+            + (m_col * F.relu(F.conv2d(abg, lap_k, padding=1).abs() - F.conv2d(pbg, lap_k, padding=1).abs())).mean()
+        )
+
+        total = (
+            total
+            + self.col_hess_w * l_col_hess
+            + self.col_curve_w * l_col_curve
+            + self.col_punch_w * l_col_punch
+            + self.col_lap_w * l_col_lap
+        )
+        logs["l_chess"] = l_col_hess.item()
+        logs["l_cpunch"] = l_col_punch.item()
+        return total, logs
+
+
 
 
 
