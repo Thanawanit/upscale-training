@@ -1325,6 +1325,25 @@ All candidates warm-started strictly from own `XyetherLineFlow_v34_Final.pth`, t
 | **CLEAN** | `v34_Baseline` | `282.8 ms` | `17.88` | `10.98` | `2.42` | `2239.0` | `1.659` | Baseline |
 | **CLEAN** | **`P35_HS8B_Near` (320 it)** | **`212.8 ms (-24.8%)`** | **`17.74`** | **`10.92`** | **`2.39`** | **`2270.8`** | **`1.660`** | **WINNER (+31.8 LapVar, cleaner & straighter!)** |
 
+---
+
+## 24. Phase 35 — `XyetherLineFlow_v35` Final Kaggle Training & Audit (`v47`, `XyetherLineFlowP35Net` + `Phase35SharpColoredVectorLoss`)
+- **Lineage & Config:** 100% own student checkpoint (`XyetherLineFlowP35Net(56ch, 8b, PReLU, HalfStrip + Lossless PixelUnshuffle(2) 540p ChrSnap 16/24/32 + ink_keep)`, `581,100` params, `212.8 ms @540p` T4 ORT FP16 = **`-24.8%` faster than `v34`**), resumed strictly from own `XyetherLineFlow_v34_Final.pth` (`76/105` backbone tensors loaded, `29` fresh `PUChr16` tensors with `5×` differential LR `5e-4` vs `1e-4`), trained `5,500` iters (`8,838.5s` / `2.45h` on Kaggle T4, `batch=12`, `Phase35SharpColoredVectorLoss` + Opponent-Chroma edge-rich patch sampling, `Luv 0.30`, `LPIPS 0.45`, `PatchGAN 0.05`, `EMA 0.9992`).
+- **Archived Production Artifacts ([`checkpoints/Phase35_XyetherLineFlow_v1/`](file:///d:/MODEL%20UPSCALE%20ME/checkpoints/Phase35_XyetherLineFlow_v1/)) & HuggingFace (`Thanawanit/Kaggle-Backup/checkpoints/Phase35_XyetherLineFlow_v1/`):**
+  - `XyetherLineFlow_v35_Final.pth` (`4.72 MB`, `params_ema`)
+  - `XyetherLineFlow_v35_Final.onnx` (`2.25 MB` — FP32 parity **`max_abs_diff = 9.54e-07`**)
+  - `XyetherLineFlow_v35_Final_FP16.onnx` (**`1.15 MB`** — FP16 parity **`max_abs_diff = 1.93e-03`**)
+  - `phase35_metrics_report.json` (`42.7 KB`)
+- **`XyetherEvaluator` Final:** **`line_depth = 0.00`**, **`noise_residual_std = 15.41`** (beats `v34 15.71`!), `overshoot_halo = 15.46`.
+- **All-Time Record Sharpness & Hairline Depth on 4-Regime `test_anime.png` (Faster `-24.8%` AND Sharper than `v34` & `APISR_2x`!):**
+  - `Clean_LR`: **`HL1 = 7 / HL2 = 21`** (deepest `HL2` ever!), **`LapVar = 1196.3`** (`+18.3` over `v34`, `+131.7` over `v33`, `+227.0` over `APISR_2x`!), **`Chk = 0.14`** (cleaner than `v34 0.16`), `SSIM = 0.9516` (beats `v34 0.9511`)
+  - `RealBlurry_LR`: **`HL1 = 5 / HL2 = 25`** (`-4` deeper than `v34 9/29` & `Strong_v3 9/37`!), **`LapVar = 1110.2`** (all-time record!), **`Chk = 0.17`** (beats `v34 0.18`), `SSIM = 0.9412` (beats `v34 0.9408`)
+  - `Harsh_Q62_LR`: **`HL1 = 19 / HL2 = 50`** (matches `APISR HL2=50`, beats `v34 22/56`!), **`LapVar = 910.1`** (beats `APISR 895.7`), **`Chk = 0.18`** (beats `v34 0.19`)
+  - `Shuffled_Reencode_LR`: **`HL1 = 21 / HL2 = 55`** (beats `v34 21/58` & `APISR 25/82`!), **`LapVar = 969.5`** (beats `APISR 936.5`)
+- **Local Visual & Quantitative Verification on *Chainsaw Man (Reze Arc)* ([`p35_final_csm_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p35_final_csm_zoom.jpg)):**
+  - `LapVar = 1880.4` (`+60.6` over `v34 1819.8`, `+211.0` over `APISR 1669.4`), `ChrFlat = 2.86` (beats `v34 2.90`), `ColHessC = 5.77` (beats `APISR 6.02`), razor-straight thin curved brown-grey finger lines & orange hair tips with zero wobble and zero color bleed.
+
+
 
 
 
