@@ -44,6 +44,7 @@ from losses.xyether_losses import (
     Phase33MacroblockDebleedLoss,
     Phase34ChrSnapLoss,
     Phase35SharpColoredVectorLoss,
+    Phase36NaturalRGBVectorLoss,
     VGGPerceptualLoss,
 )
 
@@ -358,7 +359,9 @@ def train_p23(args) -> None:
         freq_micro_rescue=(args.loss_version == 27 or args.loss_version == 28),
         unclipped=is_p29,
     ).to(device)
-    if args.loss_version >= 35:
+    if args.loss_version >= 36:
+        criterion = Phase36NaturalRGBVectorLoss().to(device)
+    elif args.loss_version >= 35:
         criterion = Phase35SharpColoredVectorLoss().to(device)
     elif args.loss_version >= 34:
         criterion = Phase34ChrSnapLoss().to(device)

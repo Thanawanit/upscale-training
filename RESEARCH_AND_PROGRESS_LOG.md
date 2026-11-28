@@ -1343,6 +1343,22 @@ All candidates warm-started strictly from own `XyetherLineFlow_v34_Final.pth`, t
 - **Local Visual & Quantitative Verification on *Chainsaw Man (Reze Arc)* ([`p35_final_csm_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p35_final_csm_zoom.jpg)):**
   - `LapVar = 1880.4` (`+60.6` over `v34 1819.8`, `+211.0` over `APISR 1669.4`), `ChrFlat = 2.86` (beats `v34 2.90`), `ColHessC = 5.77` (beats `APISR 6.02`), razor-straight thin curved brown-grey finger lines & orange hair tips with zero wobble and zero color bleed.
 
+---
+
+## 25. Phase 36 Pre-Flight — Eliminating AE-Sharpen Halo & Fixing Dark/Low-Luma Colored Lineart (`Arm1_Natural_u00` Winner)
+- **Diagnosed Issues on `v35_Final`:**
+  1. `unsharp_amt = 0.11` + `punch_w = 3.0` caused visible After-Effects-style white edge ringing (`Halo = +22/+20` vs `APISR +2/+8`).
+  2. `m_col` required `ay > 0.14`, excluding dark-colored lines (e.g., dark blue-on-navy in *The Girl Downstairs* where Blue only contributes `11.4%` to Luma `Y`).
+- **Colab T4 Controlled Ablation (14 frames, strict 5 user titles + 2026++, warm-started from own `v35_Final.pth`, 240 iters, [`p36_ablation_natural_zoom.jpg`](file:///C:/Users/IDAEPAD/.gemini/antigravity/brain/c5d1b4ad-23b5-4d8d-b52c-42e17ee90a90/p36_ablation_natural_zoom.jpg)):**
+
+| Model | `HaloP99` (AE Ringing ↓) | `ColHessRGB` (All Colored Lines ↓) | `BgBokehErr` (Soft BG Keep ↓) | `LapVar` | Visual Verdict |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| `v35_Final` (`unsharp=0.11`) | `10.66` | `17.16` | `3.30` | `1866.9` | Noticeable AE-sharpen ringing |
+| **`Arm1_Natural_u00` (`unsharp=0.00`, `halo_extra=3.0`, Max-RGB 4-dir Hessian)** | **`10.18`** | **`15.69 (-8.6%)`** | **`3.16`** | `1707.4` | **WINNER — zero AE ringing, straightest colored lines, most natural bokeh!** |
+| `Arm2_CrispNat_u02` (`unsharp=0.02`, `halo_extra=2.2`) | `10.65` | `15.89` | `3.19` | `1724.4` | Slightly more halo than `u00` |
+| `APISR_2x` | `0.00` | `18.71` | `3.88` | `1978.8` | Over-sharpens blurred background foliage |
+
+
 
 
 

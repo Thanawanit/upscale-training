@@ -2827,6 +2827,100 @@ class Phase35SharpColoredVectorLoss(Phase34ChrSnapLoss):
         return total, logs
 
 
+class Phase36NaturalRGBVectorLoss(Phase35SharpColoredVectorLoss):
+    """
+    Phase 36 Natural-Vector & All-Color Lineart Loss (Colab T4 Arm1_Natural_u00 Winner):
+    1. Eliminates AE-style Oversharpen Halo (`unsharp_amt=0.00`, `punch_w=1.4`, `halo_extra_w=3.0`
+       against clean APISR Teacher local [min3, max3]).
+    2. Fixes Dark-Colored & Low-Luma Colored Lineart (e.g. dark blue-on-navy in GirlDownstairs_2):
+       removes the `ay > 0.14` cutoff and applies 4-direction (H, V, 45, 135) Hessian Straightness
+       + Tangent Angle Smoothness directly on R, G, B channels masked by Max-RGB `span_rgb`.
+    3. Preserves natural soft background bokeh (`BgBokehErr: 3.30 -> 3.16`).
+    """
+
+    def __init__(
+        self,
+        unsharp_amt: float = 0.0,
+        punch_w: float = 1.4,
+        lowr_w: float = 1.6,
+        halo_extra_w: float = 3.0,
+        rgb_hess_w: float = 3.2,
+        rgb_curve_w: float = 2.6,
+    ):
+        super().__init__(
+            unsharp_amt=unsharp_amt,
+            punch_w=punch_w,
+            lowr_w=lowr_w,
+            col_hess_w=2.2,
+            col_curve_w=2.0,
+            col_punch_w=2.0,
+            col_lap_w=1.4,
+        )
+        self.halo_extra_w = float(halo_extra_w)
+        self.rgb_hess_w = float(rgb_hess_w)
+        self.rgb_curve_w = float(rgb_curve_w)
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        tar_b: torch.Tensor,
+        gt_b: torch.Tensor,
+        lr_b: torch.Tensor,
+        edge_zone: torch.Tensor = None,
+        regime: torch.Tensor = None,
+        warmstart_out: torch.Tensor = None,
+        warmstart_weight: float = 0.0,
+    ):
+        total, logs = super().forward(
+            pred,
+            tar_b,
+            gt_b,
+            lr_b,
+            edge_zone=edge_zone,
+            regime=regime,
+            warmstart_out=warmstart_out,
+            warmstart_weight=warmstart_weight,
+        )
+        pf = pred.float()
+        af = tar_b.float()
+        with torch.no_grad():
+            max3_af = F.max_pool2d(af, 3, 1, 1)
+            min3_af = -F.max_pool2d(-af, 3, 1, 1)
+            span_rgb = (max3_af - min3_af).max(dim=1, keepdim=True)[0]
+            is_deg = (
+                torch.ones((pred.shape[0], 1, 1, 1), device=pred.device, dtype=pred.dtype)
+                if regime is None
+                else (regime > 0).float().view(-1, 1, 1, 1)
+            )
+            w_deg = 1.0 + 0.75 * is_deg
+            m_rgb_edge = ((span_rgb - 0.035) / 0.055).clamp(0.0, 1.0) * w_deg
+
+        l_halo_strict = (
+            F.relu(pf - (max3_af + 0.001)).mean()
+            + 0.70 * F.relu((min3_af - 0.001) - pf).mean()
+        )
+        l_rgb_hess = (
+            self._hess_4dir_1ch(pf[:, 0:1], af[:, 0:1], m_rgb_edge)
+            + self._hess_4dir_1ch(pf[:, 1:2], af[:, 1:2], m_rgb_edge)
+            + self._hess_4dir_1ch(pf[:, 2:3], af[:, 2:3], m_rgb_edge)
+        ) / 3.0
+        l_rgb_curve = (
+            self._angle_smooth_1ch(pf[:, 0:1], af[:, 0:1], m_rgb_edge)
+            + self._angle_smooth_1ch(pf[:, 1:2], af[:, 1:2], m_rgb_edge)
+            + self._angle_smooth_1ch(pf[:, 2:3], af[:, 2:3], m_rgb_edge)
+        ) / 3.0
+
+        total = (
+            total
+            + self.halo_extra_w * l_halo_strict
+            + self.rgb_hess_w * l_rgb_hess
+            + self.rgb_curve_w * l_rgb_curve
+        )
+        logs["l_hstr"] = l_halo_strict.item()
+        logs["l_rgbh"] = l_rgb_hess.item()
+        return total, logs
+
+
 
 
 
